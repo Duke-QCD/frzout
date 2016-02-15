@@ -9,13 +9,17 @@ with open('README.rst') as f:
     long_description = f.read()
 
 # TODO only cythonize for dev builds
-ext_modules = cythonize(
+ext_modules = cythonize([
     Extension(
         'frzout.sampler',
         ['frzout/sampler.pyx'],
         include_dirs=[numpy.get_include()]
-    )
-)
+    ),
+    Extension(
+        'frzout.test._test_fourvec',
+        ['frzout/test/_test_fourvec.pyx'],
+    ),
+])
 
 setup(
     name='frzout',
