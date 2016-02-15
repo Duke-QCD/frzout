@@ -27,6 +27,7 @@ setup(
     url='https://github.com/Duke-QCD/frzout',
     license='MIT',
     packages=['frzout', 'frzout.test'],
+    package_data={'frzout': ['mass_width_2015.mcd']},
     ext_modules=ext_modules,
     install_requires=['numpy', 'scipy'],
     classifiers=[
