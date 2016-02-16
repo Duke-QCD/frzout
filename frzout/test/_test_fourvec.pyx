@@ -1,18 +1,18 @@
 # cython: cdivision = True
 
-import random
-
 from libc cimport math
 
-from .. cimport fourvec
+from .. cimport fourvec, random
 
 
 def _test_fourvec():
+    random.seed()
+
     cdef:
         double vmax = .99/math.sqrt(3.)
-        double vx = random.uniform(-vmax, vmax)
-        double vy = random.uniform(-vmax, vmax)
-        double vz = random.uniform(-vmax, vmax)
+        double vx = vmax*(2.*random.random() - 1.)
+        double vy = vmax*(2.*random.random() - 1.)
+        double vz = vmax*(2.*random.random() - 1.)
         double gamma = 1./math.sqrt(1. - vx*vx - vy*vy - vz*vz)
 
     cdef fourvec.FourVector u
@@ -26,12 +26,12 @@ def _test_fourvec():
     assert math.fabs(uu - 1.) < 1e-15, \
         'Four-velocity is not normalized: {} != 1'.format(uu)
 
-    cdef double m = random.uniform(.1, 1)
+    cdef double m = random.random() + .1
 
     cdef fourvec.FourVector p
-    p.x = random.uniform(-1, 1)
-    p.y = random.uniform(-1, 1)
-    p.z = random.uniform(-1, 1)
+    p.x = 2.*random.random() - 1.
+    p.y = 2.*random.random() - 1.
+    p.z = 2.*random.random() - 1.
     p.t = math.sqrt(m*m + p.x*p.x + p.y*p.y + p.z*p.z)
 
     cdef double pp = fourvec.dot(&p, &p)
@@ -58,8 +58,8 @@ def _test_fourvec():
     ]), 'Boosted four-velocity is not zero: {}'.format(u)
 
     cdef:
-        double vx1 = random.uniform(-.99, .99)
-        double vx2 = random.uniform(-.99, .99)
+        double vx1 = .99*(2*random.random() - 1)
+        double vx2 = .99*(2*random.random() - 1)
         double gamma1 = 1./math.sqrt(1. - vx1*vx1)
         double gamma2 = 1./math.sqrt(1. - vx2*vx2)
 
