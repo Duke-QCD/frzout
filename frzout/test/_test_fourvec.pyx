@@ -44,6 +44,51 @@ def _test_fourvec():
     assert math.fabs(pp/(m*m) - 1.) < 1e-13, \
         'Boosted four-momentum is not normalized: {} != {}'.format(pp, m*m)
 
+    cdef fourvec.FourVector a
+    a.t = random.random()
+    a.x = random.random()
+    a.y = random.random()
+    a.z = random.random()
+
+    cdef:
+        double vsq = vx*vx + vy*vy + vz*vz
+        double L[4][4]
+
+    L[0][0] = gamma
+    L[1][1] = 1. + (gamma - 1.)*vx*vx/vsq
+    L[2][2] = 1. + (gamma - 1.)*vy*vy/vsq
+    L[3][3] = 1. + (gamma - 1.)*vz*vz/vsq
+    L[0][1] = gamma*vx
+    L[0][2] = gamma*vy
+    L[0][3] = gamma*vz
+    L[1][2] = (gamma - 1.)*vx*vy/vsq
+    L[1][3] = (gamma - 1.)*vx*vz/vsq
+    L[2][3] = (gamma - 1.)*vy*vz/vsq
+    L[1][0] = L[0][1]
+    L[2][0] = L[0][2]
+    L[3][0] = L[0][3]
+    L[2][1] = L[1][2]
+    L[3][1] = L[1][3]
+    L[3][2] = L[2][3]
+
+    cdef:
+        double* aptr = &a.t
+        double a_boosted[4]
+        int i, j
+
+    for i in range(4):
+        a_boosted[i] = 0.
+        for j in range(4):
+            a_boosted[i] += aptr[j]*L[i][j]
+
+    fourvec.boost_inverse(&a, &u)
+    assert all([
+        math.fabs(a.t/a_boosted[0] - 1.) < 1e-15,
+        math.fabs(a.x/a_boosted[1] - 1.) < 1e-15,
+        math.fabs(a.y/a_boosted[2] - 1.) < 1e-15,
+        math.fabs(a.z/a_boosted[3] - 1.) < 1e-15,
+    ]), 'Boost does not agree with full boost matrix.'
+
     cdef fourvec.FourVector neg_u = u
     neg_u.x *= -1
     neg_u.y *= -1
