@@ -35,7 +35,7 @@ cdef inline void boost_inverse(FourVector* a, const FourVector* u) nogil:
     cdef double a3u3 = a.x*u.x + a.y*u.y + a.z*u.z
 
     # scale factor for boosting space components
-    cdef double w = a.t + a3u3/(1. + u.t)
+    cdef double w = a.t + a3u3/(1 + u.t)
 
     # boost time component
     a.t = a.t*u.t + a3u3
