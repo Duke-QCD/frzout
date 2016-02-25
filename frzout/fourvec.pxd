@@ -12,6 +12,14 @@ cdef inline double dot(const FourVector* a, const FourVector* b) nogil:
     return a.t*b.t - a.x*b.x - a.y*b.y - a.z*b.z
 
 
+cdef inline double square(const FourVector* a) nogil:
+    """
+    Compute the square (dot product with itself) of a four vector.
+
+    """
+    return dot(a, a)
+
+
 cdef inline void boost_inverse(FourVector* a, const FourVector* u) nogil:
     """
     Boost four-vector `a` from the frame specified by four-velocity `u` to the
