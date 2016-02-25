@@ -40,7 +40,7 @@ cdef inline void boltzmann(double m, double T, FourVector* p) nogil:
     while True:
         pmag = -T*math.log(random()*random()*random())
         p.t = math.sqrt(m*m + pmag*pmag)
-        if random() > math.exp((pmag - p.t)/T):
+        if random() < math.exp((pmag - p.t)/T):
             break
 
     # TODO reuse random numbers?
