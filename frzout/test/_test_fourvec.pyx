@@ -1,5 +1,3 @@
-# cython: cdivision = True
-
 from libc cimport math
 
 from .. cimport fourvec, random

@@ -18,8 +18,9 @@ ext_modules = cythonize([
     Extension(
         'frzout.test._test_fourvec',
         ['frzout/test/_test_fourvec.pyx'],
-    ),
-])
+    )],
+    compiler_directives=dict(cdivision=True, language_level=3)
+)
 
 setup(
     name='frzout',

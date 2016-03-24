@@ -1,8 +1,6 @@
-# cython: cdivision = True
-
 from libc cimport math
 
-from fourvec cimport FourVector
+from .fourvec cimport FourVector
 
 # TODO better RNG?
 cdef extern from "stdlib.h" nogil:

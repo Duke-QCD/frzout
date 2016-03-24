@@ -1,5 +1,3 @@
-# cython: cdivision = True
-
 cdef struct FourVector:
     double t, x, y, z
 

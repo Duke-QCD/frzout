@@ -1,4 +1,3 @@
-# cython: cdivision = True
 # cython: boundscheck = False, wraparound = False, initializedcheck = False
 
 import numpy as np
@@ -9,9 +8,9 @@ cimport numpy as np
 from libc cimport math
 from cpython.mem cimport PyMem_Malloc, PyMem_Realloc, PyMem_Free
 
-cimport fourvec
-from fourvec cimport FourVector
-cimport random
+from . cimport fourvec
+from . cimport random
+from .fourvec cimport FourVector
 from .species cimport SpeciesInfo, bw_dist
 
 cdef extern from "quadrature.h":
