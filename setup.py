@@ -33,7 +33,7 @@ setup(
     packages=['frzout', 'frzout.test'],
     package_data={'frzout': ['mass_width_2015.mcd']},
     ext_modules=ext_modules,
-    install_requires=['numpy', 'scipy'],
+    install_requires=['numpy'],
     classifiers=[
         'Development Status :: 1 - Planning',
         'Intended Audience :: Science/Research',
