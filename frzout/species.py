@@ -44,6 +44,20 @@ def _read_particle_data():
         if IDs[0] < 100:
             continue
 
+        # digits 1-3 of the ID denote the quark content
+        q1, q2, q3 = quarks = [_nth_digit(IDs[0], n) for n in [1, 2, 3]]
+
+        # skip charm and bottom particles
+        if any(q > 3 for q in quarks):
+            continue
+
+        # the last digit (ones place) of the ID is the degeneracy
+        degen = _nth_digit(IDs[0], 0)
+
+        # skip K0S (ID = 310) and K0L (130)
+        if degen == 0:
+            continue
+
         # extract rest of data
         mass = float(l[33:50])
         try:
@@ -55,16 +69,6 @@ def _read_particle_data():
         charges = [charge_codes[i] for i in charges.split(b',')]
 
         assert len(IDs) == len(charges)
-
-        # the last digit (ones place) of the ID is the degeneracy
-        degen = _nth_digit(IDs[0], 0)
-
-        # skip K0S (ID = 310) and K0L (130)
-        if degen == 0:
-            continue
-
-        # the next three digits denote the quark content
-        q1, q2, q3 = [_nth_digit(IDs[0], n) for n in [1, 2, 3]]
 
         base_data = dict(
             name=name,
@@ -78,7 +82,7 @@ def _read_particle_data():
         for ID, charge in zip(IDs, charges):
             data = base_data.copy()
             # The PDG does not explicitly list antiparticles.  A particle has a
-            # corresponding particle if any of the following are true:
+            # corresponding antiparticle if any of the following are true:
             #   - it is a baryon (i.e. has three quarks)
             #   - it is charged
             #   - it is a neutral meson with two different quarks
