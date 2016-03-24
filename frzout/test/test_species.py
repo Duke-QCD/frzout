@@ -46,3 +46,17 @@ def test_species():
 
     assert not species_dict[2212]['boson'], \
         'The proton is a fermion.'
+
+    assert 'mass_range' not in species_dict[211], \
+        'The pion is stable.'
+
+    assert 'mass_range' in species_dict[213], \
+        'The rho is unstable.'
+
+    assert abs(species_dict[213]['mass_range'][0] - .28) < 1e-12, \
+        'The rho mass threshold is two pions.'
+
+    assert all(
+        i['mass_range'][0] >= .28
+        for i in species_dict.values() if 'mass_range' in i
+    ), 'The lightest decay product is two pions.'

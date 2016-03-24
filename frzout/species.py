@@ -17,6 +17,106 @@ def _nth_digit(i, n):
     return (i // 10**n) % 10
 
 
+def _mass_range(name, mass, width, degen, boson):
+    """
+    Determine the mass thresholds of a resonance for truncating its
+    Breit-Wigner distribution.
+
+    """
+    # Masses of decay products, rounded up so that the minimum threshold is
+    # slightly larger than the actual total mass of the decay products.
+    PION = .14
+    KAON = .50
+    ETA = .55
+    RHO = .78
+    OMEGA = .79
+    KSTAR = .90
+    NUCLEON = .94
+    LAMBDA = 1.12
+    SIGMA = 1.20
+    XI = 1.33
+
+    if boson:  # meson
+        m_min = {
+            'f(0)(500)': 2*PION,
+            'rho(770)': 2*PION,
+            'omega(782)': 2*PION,
+            "eta'(958)": 2*PION + ETA,
+            'f(0)(980)': 2*PION,
+            'a(0)(980)': ETA + PION,
+            'phi(1020)': 2*KAON,
+            'h(1)(1170)': RHO + PION,
+            'b(1)(1235)': OMEGA + PION,  # 4*PION
+            'a(1)(1260)': RHO + PION,
+            'f(2)(1270)': 2*PION,
+            'f(1)(1285)': 4*PION,
+            'eta(1295)': ETA + 2*PION,
+            'pi(1300)': RHO + PION,  # 3*PION
+            'a(2)(1320)': 3*PION,
+            'f(0)(1370)': 2*PION,
+            'pi(1)(1400)': ETA + PION,
+            'eta(1405)': 4*PION,  # ETA + 2*PION
+            'f(1)(1420)': 2*KAON + PION,
+            'omega(1420)': RHO + PION,
+            'a(0)(1450)': ETA + PION,
+            'rho(1450)': 2*PION,
+            'eta(1475)': 2*KAON + PION,
+            'f(0)(1500)': 2*PION,
+            "f(2)'(1525)": 2*KAON,  # 2*PION
+            'pi(1)(1600)': .958 + PION,  # 3*PION
+            'eta(2)(1645)': ETA + 2*PION,
+            'omega(1650)': RHO + PION,
+            'omega(3)(1670)': RHO + PION,
+            'pi(2)(1670)': 3*PION,
+            'phi(1680)': 2*KAON,
+            'rho(3)(1690)': 2*PION,
+            'rho(1700)': RHO + 2*PION,  # 2*PION
+            'f(0)(1710)': 2*PION,
+            'pi(1800)': 3*PION,
+            'phi(3)(1850)': 2*KAON,
+            'f(2)(1950)': 4*PION,  # 2*PION
+            'f(2)(2010)': 2*KAON,
+            'a(4)(2040)': 3*PION,
+            'f(4)(2050)': 2*PION,
+            'f(2)(2300)': 2*KAON,
+            'f(2)(2340)': 2*ETA,
+            'K*(892)': KAON + PION,
+            'K(1)(1270)': KSTAR + PION,
+            'K(1)(1400)': KSTAR + PION,
+            'K*(1410)': KAON + PION,
+            'K(0)*(1430)': KAON + PION,
+            'K(2)*(1430)': KAON + PION,
+            'K*(1680)': KAON + PION,
+            'K(2)(1770)': KAON + 2*PION,  # KSTAR + PION
+            'K(3)*(1780)': KAON + PION,
+            'K(2)(1820)': KSTAR + PION,
+            'K(4)*(2045)': KAON + PION,
+        }.get(name)
+
+    else:  # baryon
+        m_min = {
+            'N': NUCLEON + PION,
+            'Delta': NUCLEON + PION,
+            'Lambda': SIGMA + PION,
+            'Sigma': LAMBDA + PION,
+            'Xi': XI + PION,
+            'Omega': XI + KAON + PION,
+        }.get(name.split('(')[0])
+
+    assert m_min is not None, \
+        'unknown mass threshold for {}'.format(name)
+
+    assert mass > m_min, \
+        'minimum mass larger than pole mass for {}'.format(name)
+
+    # Truncate the distribution at several widths.  The Breit-Wigner shape has
+    # a long, slowly-decaying tail so we must cut it somewhere.
+    m_min = max(m_min, mass - 4*width)
+    m_max = mass + 4*width
+
+    return m_min, m_max
+
+
 def _read_particle_data():
     """
     Parse particle data from the PDG table.
@@ -77,6 +177,10 @@ def _read_particle_data():
             degen=degen,
             boson=bool(degen % 2),
         )
+
+        # determine mass thresholds for resonances
+        if width > 1e-3:
+            base_data.update(mass_range=_mass_range(**base_data))
 
         # yield an entry for each (ID, charge) pair
         for ID, charge in zip(IDs, charges):
