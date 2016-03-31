@@ -474,7 +474,7 @@ cdef class Sampler:
         # reset particle list
         self.particles.n = 0
 
-        N = math.log(random.random())
+        N = math.log(1 - random.random())
 
         for ielem in range(self.surface.n):
             elem = self.surface.data + ielem
@@ -489,9 +489,9 @@ cdef class Sampler:
                 N += elem.vmax*species.density
                 while N > 0:
                     # adding a negative number
-                    N += math.log(random.random())
+                    N += math.log(1 - random.random())
 
-                    random.boltzmann(species.m0, self.hrg.T, &p)
+                    random.four_momentum(species, self.hrg.T, &p)
                     fourvec.boost_inverse(&p, &elem.u)
 
                     p_dot_sigma = fourvec.dot(&p, &elem.sigma)
