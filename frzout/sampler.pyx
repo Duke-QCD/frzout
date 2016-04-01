@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .species import species_dict
+from .species import species_dict, _normalize_species
 
 cimport numpy as np
 from libc cimport math
@@ -96,7 +96,6 @@ cdef class Surface:
             PyMem_Free(self.data)
 
 
-# These objects are managed and initialized by the HRG class.
 cdef struct SpeciesInfo:
     # PDG code
     int ID
@@ -114,6 +113,71 @@ cdef struct SpeciesInfo:
     double atan_min, atan_max
     # number density [fm^-3]
     double density
+    # scale factors for momentum sampling
+    # see init_species() and sample_four_momentum()
+    double xscale, Pscale
+
+
+cdef void init_species(
+    SpeciesInfo* s, int ID, dict info, bint res_width, double T
+):
+    """
+    Initialize a SpeciesInfo object with the given ID and properties from the
+    Python dict `info`.  Prepare for Breit-Wigner mass sampling if `res_width`
+    is true.  Use temperature `T` for computing thermodynamic quantities.
+
+    """
+    s.ID    = ID
+    s.degen = info['degen']
+    s.sign  = -1 if info['boson'] else 1
+    s.m0    = info['mass']
+
+    if res_width and 'mass_range' in info:
+        s.stable   = 0
+        s.width    = info['width']
+        s.m_min    = info['mass_range'][0]
+        s.m_max    = info['mass_range'][1]
+        s.atan_min = math.atan(2*(s.m0 - s.m_min)/s.width)
+        s.atan_max = math.atan(2*(s.m_max - s.m0)/s.width)
+        s.bw_norm = 1/integrate_bw(s)
+    else:
+        s.stable   = 1
+
+    s.density = integrate_species(s, T, DENSITY)
+
+    cdef:
+        double xmaxsq
+        double z = (s.m0 if s.stable else s.m_min)/T
+
+    # Set scale factors for momentum sampling, see also sample_four_momentum().
+    # Use rescaling for all but the smallest masses.
+    if z > 1.3:
+        # Compute argmax of the Boltzmann dist x^2*exp(-sqrt(z^2 + x^2)).
+        # No closed form for the argmax of Bose/Fermi dists.
+        xmaxsq = 2*(1 + math.sqrt(1 + z*z))
+        # The argmax of the envelope x^2*exp(-x) is x = 2.
+        # Rescale x so that it peaks at the desired xmax.
+        s.xscale = math.sqrt(xmaxsq)/2
+        # Now rescale P so that it equals one (or just below one) at xmax.
+        # Since xmax is approximate and the Bose/Fermi dists have slightly
+        # different shapes as Boltzmann, the envelope can fall slightly below
+        # the target.  The extra factor (1 + .5*exp(-2*z)) ensures the envelope
+        # remains above the target for z > 1.26.
+        s.Pscale = (
+            math.exp(-2) * (math.exp(math.sqrt(xmaxsq + z*z)) + s.sign) /
+            (1 + .5*math.exp(-2*z))
+        )
+    elif z < .86 and s.sign == -1:
+        # There is one more wrinkle for very light bosons (z < .855): the
+        # envelope briefly falls below the target near x ~ 1.  This extra
+        # factor extends the range to z ~ .7, which is the z of the lightest
+        # species (pi0) at T ~ 192 MeV.  So this works for any reasonable
+        # particlization temperature.
+        s.xscale = 1
+        s.Pscale = 1/(1 + 1.3*(.86 - z))
+    else:
+        s.xscale = 1
+        s.Pscale = 1
 
 
 cdef int equiv_species(const SpeciesInfo* a, const SpeciesInfo* b) nogil:
@@ -323,74 +387,36 @@ cdef void sample_four_momentum(
     except the pion have masses much larger than the temperature.
 
     To improve efficiency, rescale x = p/T by a constant factor (xscale) and
-    the envelope dist by another factor (Pxscale) so that the envelope peaks at
+    the envelope dist by another factor (Pscale) so that the envelope peaks at
     the same point as the target dist.  This is commensurate with using a
     larger effective temperature so that the envelope has a longer tail than
-    the target and hence remains above it for all x (provided Pxscale is
-    well-chosen).
+    the target and hence remains above it for all x (provided Pscale is
+    well-chosen).  These scale factors are pre-computed in init_species().
 
     Efficiency is ~90% for small masses (z ~ 1) decreasing to ~70% for large
     masses (z ~ 10).
 
     """
-    cdef double z, Pm
+    cdef double m, z, r, x, P
 
-    if s.stable:
-        z = s.m0/T
-        Pm = 1
-    else:
-        # Use the minimum threshold mass for the momentum envelope.
-        z = s.m_min/T
-
-    cdef double xmaxsq, xscale, Pxscale
-
-    # Use rescaling for all but the smallest masses.
-    if z > 1.3:
-        # Compute argmax of the Boltzmann dist x^2*exp(-sqrt(z^2 + x^2)).
-        # No closed form for the argmax of Bose/Fermi dists.
-        xmaxsq = 2*(1 + math.sqrt(1 + z*z))
-        # The argmax of the envelope x^2*exp(-x) is x = 2.
-        # Rescale x so that it peaks at the desired xmax.
-        xscale = math.sqrt(xmaxsq)/2
-        # Now rescale P so that it equals one (or just below one) at xmax.
-        # Since xmax is approximate and the Bose/Fermi dists have slightly
-        # different shapes as Boltzmann, the envelope can fall slightly below
-        # the target.  The extra factor (1 + .5*exp(-2*z)) ensures the envelope
-        # remains above the target for z > 1.26.
-        Pxscale = (
-            math.exp(-2) * (math.exp(math.sqrt(xmaxsq + z*z)) + s.sign) /
-            (1 + .5*math.exp(-2*z))
-        )
-    elif z < .86 and s.sign == -1:
-        # There is one more wrinkle for very light bosons (z < .855): the
-        # envelope briefly falls below the target near x ~ 1.  This extra
-        # factor extends the range to z ~ .7, which is the z of the lightest
-        # species (pi0) at T ~ 192 MeV.  So this works for any reasonable
-        # particlization temperature.
-        xscale = 1
-        Pxscale = 1/(1 + 1.3*(.86 - z))
-    else:
-        xscale = 1
-        Pxscale = 1
-
-    cdef double m, r, x, Px
-
-    # main sampling loop
     while True:
-        if not s.stable:
-            # sample proposal mass
+        if s.stable:
+            m = s.m0
+            P = 1
+        else:
+            # sample proposal mass from Breit-Wigner
             m = bw_icdf(s, rand())
-            Pm = bw_accept_prob(s, m)
-            z = m/T
+            P = bw_accept_prob(s, m)
 
         # sample proposal x from envelope x^2*exp(-x/xscale)
         r = (1 - rand())*(1 - rand())*(1 - rand())
-        x = -xscale*math.log(r)
+        x = -s.xscale*math.log(r)
 
         # acceptance probability
-        Px = Pxscale / r / (math.exp(math.sqrt(x*x + z*z)) + s.sign)
+        z = m/T
+        P *= s.Pscale / r / (math.exp(math.sqrt(x*x + z*z)) + s.sign)
 
-        if rand() < Px*Pm:
+        if rand() < P:
             break
 
     cdef:
@@ -416,25 +442,13 @@ cdef class HRG:
     cdef:
         SpeciesInfo* data
         size_t n
-        double total_density
         double T
+        double total_density
 
-    def __cinit__(self, T, species='all', res_width=True):
+    def __cinit__(self, double T, object species='all', bint res_width=True):
         self.T = T
 
-        if species == 'all':
-            species_items = list(species_dict.items())
-        else:
-            species_items = []
-            for ID in species:
-                info = species_dict.get(ID)
-                if info is None:
-                    raise ValueError('unknown species ID: {}'.format(ID))
-                species_items.append((ID, info))
-
-        species_items += [(-ID, info) for (ID, info) in species_items
-                          if info['has_anti']]
-        species_items.sort(key=lambda i: i[1]['mass'])
+        cdef list species_items = _normalize_species(species)
         self.n = len(species_items)
 
         self.data = <SpeciesInfo*> PyMem_Malloc(self.n * sizeof(SpeciesInfo))
@@ -442,33 +456,16 @@ cdef class HRG:
             raise MemoryError()
 
         self.total_density = 0
+
         cdef:
-            SpeciesInfo* s = self.data
-            double density = 0
+            size_t i
+            int ID
+            dict info
 
-        for ID, info in species_items:
-            s.ID    = ID
-            s.degen = info['degen']
-            s.sign  = -1 if info['boson'] else 1
-            s.m0 = info['mass']
-
-            if res_width and 'mass_range' in info:
-                s.stable = 0
-                s.width = info['width']
-                s.m_min = info['mass_range'][0]
-                s.m_max = info['mass_range'][1]
-                s.atan_min = math.atan(2*(s.m0 - s.m_min)/s.width)
-                s.atan_max = math.atan(2*(s.m_max - s.m0)/s.width)
-                s.bw_norm = 1/integrate_bw(s)
-            else:
-                s.stable = 1
-
-            if s == self.data or not equiv_species(s, s - 1):
-                density = integrate_species(s, self.T, DENSITY)
-
-            s.density = density
-            self.total_density += density
-            s += 1
+        for i in range(self.n):
+            ID, info = species_items[i]
+            init_species(self.data + i, ID, info, res_width, T)
+            self.total_density += self.data[i].density
 
     def __dealloc__(self):
         if self.data:

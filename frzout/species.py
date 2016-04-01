@@ -198,3 +198,39 @@ def _read_particle_data():
 
 
 species_dict = dict(_read_particle_data())
+
+identified = [211, 321, 2212]
+
+
+def _normalize_species(species='all'):
+    """
+    Add antiparticles to a list of species and sort by mass.
+
+    The single argument `species` may be:
+
+        - 'all' (default) for all known species
+        - 'id' for identified particles (pions, kaons, protons)
+        - an iterable of IDs
+
+    """
+    def species_items():
+        if species == 'all':
+            return species_dict.items()
+        elif species == 'id':
+            return ((i, species_dict[i]) for i in identified)
+        else:
+            def items_gen():
+                for ID in species:
+                    info = species_dict.get(ID)
+                    if info is None:
+                        raise ValueError('unknown species ID: {}'.format(ID))
+                    yield ID, info
+            return items_gen()
+
+    def all_species_items():
+        for ID, info in species_items():
+            yield ID, info
+            if info['has_anti']:
+                yield -ID, info
+
+    return sorted(all_species_items(), key=lambda i: i[1]['mass'])

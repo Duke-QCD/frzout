@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from ..species import species_dict, _nth_digit
+from ..species import species_dict, _nth_digit, _normalize_species
 
 
 def test_species():
@@ -60,3 +60,31 @@ def test_species():
         i['mass_range'][0] >= .28
         for i in species_dict.values() if 'mass_range' in i
     ), 'The lightest decay product is two pions.'
+
+    normalized = _normalize_species()
+
+    assert len(normalized) == sum(
+        2 if info['has_anti'] else 1 for info in species_dict.values()
+    ), 'Incorrect number of normalized species.'
+
+    assert normalized[0][0] == 111, \
+        'First normalized species should be the pi0.'
+
+    assert normalized[1][0] == -normalized[2][0] == 211, \
+        'Second and third normalized species should be the pi+/-.'
+
+    assert normalized[1][1] is normalized[2][1], \
+        'pi+/- should share the same info dict.'
+
+    normalized_id = _normalize_species('id')
+
+    assert [i[0] for i in normalized_id] == [
+        211, -211, 321, -321, 2212, -2212
+    ], 'Incorrect normalized species IDs.'
+
+    test_ID = 2112
+    test_info = species_dict[test_ID]
+    assert _normalize_species([test_ID]) == [
+        (test_ID, test_info),
+        (-test_ID, test_info)
+    ], 'Incorrect custom normalized species.'
