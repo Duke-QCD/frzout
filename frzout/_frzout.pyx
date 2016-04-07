@@ -4,9 +4,9 @@ import numpy as np
 
 from .species import species_dict, _normalize_species
 
-cimport numpy as np
 from libc cimport math
 from cpython.mem cimport PyMem_Malloc, PyMem_Realloc, PyMem_Free
+from cpython.buffer cimport Py_buffer, PyBUF_FORMAT
 
 from . cimport fourvec
 from .fourvec cimport FourVector
@@ -21,7 +21,7 @@ cdef extern from "quadrature.h":
     QuadPoint* quadpts_p
 
 
-__all__ = ['Sampler']
+__all__ = ['Surface', 'HRG', 'sample']
 
 
 random.seed()
@@ -43,7 +43,12 @@ cdef class Surface:
         double total_volume
         int boost_invariant
 
-    def __cinit__(self, double[:, :] x, double[:, :] sigma, double[:, :] v):
+    def __cinit__(
+            self,
+            double[:, :] x not None,
+            double[:, :] sigma not None,
+            double[:, :] v not None
+    ):
         self.n = x.shape[0]
         self.boost_invariant = 1
 
@@ -92,8 +97,18 @@ cdef class Surface:
             )
 
     def __dealloc__(self):
-        if self.data:
-            PyMem_Free(self.data)
+        PyMem_Free(self.data)
+
+    def __len__(self):
+        return self.n
+
+    property volume:
+        """
+        Total freeze-out volume.
+
+        """
+        def __get__(self):
+            return self.total_volume
 
 
 cdef struct SpeciesInfo:
@@ -468,8 +483,10 @@ cdef class HRG:
             self.total_density += self.data[i].density
 
     def __dealloc__(self):
-        if self.data:
-            PyMem_Free(self.data)
+        PyMem_Free(self.data)
+
+    def __len__(self):
+        return self.n
 
     cdef double _sum_integrals(self, IntegralType integral):
         """
@@ -496,7 +513,8 @@ cdef class HRG:
         Particle density [fm^-3].
 
         """
-        return self._sum_integrals(DENSITY)
+        # return self._sum_integrals(DENSITY)
+        return self.total_density
 
     def energy_density(self):
         """
@@ -513,43 +531,66 @@ cdef class HRG:
         return self._sum_integrals(PRESSURE)
 
 
+# represents a sampled particle
 cdef struct Particle:
     int ID
     FourVector x, p
 
-cdef class ParticleList:
+cdef class ParticleArray:
     """
-    Represents an ensemble of produced particles.
-    Manages memory for an array of `Particle`.
+    Dynamic array of sampled particles.
 
-    Unlike `Surface` and `HRG`, a `ParticleList` may change size as more
-    particles are produced.  The following functions `extend_particle_list` and
-    `add_particle` are non-members to allow inlining (Cython calls member
-    functions through a virtual table, so inlining them is usually impossible).
+    Non-member function `add_particle` appends particles to the array and calls
+    `increase_capacity` if the array is full.  These functions are non-members
+    to allow inlining (Cython calls member functions through a virtual table,
+    so inlining them is usually impossible).  `add_particle` can easily be
+    called millions of times per second.
+
+    Implements the PEP 3118 buffer protocol to expose a contiguous array of
+    structs with format: 'ID' (int), 'x' (4 doubles), 'p' (4 doubles).
+
+    Why not use cython.view.array?  It throws errors for zero-sized arrays
+    (which certainly can happen), it's unnecessarily complex, and anyway it's
+    barely any easier than this.
 
     """
     cdef:
         Particle* data
-        size_t n, capacity
+        Py_ssize_t n, capacity
 
     def __cinit__(self, double navg):
         self.n = 0
         # Guess initial capacity based on Poissonian particle production:
         # average number of particles plus three standard deviations.
-        self.capacity = <size_t> max(navg + 3*math.sqrt(navg), 10)
+        self.capacity = <Py_ssize_t> max(navg + 3*math.sqrt(navg), 10)
 
         self.data = <Particle*> PyMem_Malloc(self.capacity * sizeof(Particle))
         if not self.data:
             raise MemoryError()
 
     def __dealloc__(self):
-        if self.data:
-            PyMem_Free(self.data)
+        PyMem_Free(self.data)
+
+    def __getbuffer__(self, Py_buffer* view, int flags):
+        view.buf = self.data
+        view.obj = self
+        view.len = self.n * sizeof(Particle)
+        view.itemsize = sizeof(Particle)
+        view.strides = &view.itemsize
+        view.ndim = 1
+        view.shape = &self.n
+        view.readonly = 0
+        view.suboffsets = NULL
+
+        if flags & PyBUF_FORMAT:
+            view.format = 'i:ID: 4d:x: 4d:p:'
+        else:
+            view.format = NULL
 
 
-cdef inline void extend_particle_list(ParticleList particles) with gil:
+cdef inline void increase_capacity(ParticleArray particles) with gil:
     """
-    Increase the capacity of a `ParticleList`.
+    Increase the capacity of a `ParticleArray`.
 
     """
     cdef:
@@ -570,17 +611,17 @@ cdef inline void extend_particle_list(ParticleList particles) with gil:
 
 
 cdef inline void add_particle(
+    ParticleArray particles,
     const SpeciesInfo* species,
     const FourVector* x,
-    const FourVector* p,
-    ParticleList particles
+    const FourVector* p
 ) nogil:
     """
-    Append a new particle to a `ParticleList`, extending capacity if necessary.
+    Append a new particle to a `ParticleArray`; increase capacity if necessary.
 
     """
     if particles.n == particles.capacity:
-        extend_particle_list(particles)
+        increase_capacity(particles)
 
     cdef Particle* part = particles.data + particles.n
     part.ID = species.ID
@@ -590,95 +631,90 @@ cdef inline void add_particle(
     particles.n += 1
 
 
-cdef class Sampler:
+cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
     """
-    Main sampler class.
+    Sample an ensemble of particles from freeze-out hypersurface `surface`,
+    using thermodynamic quantities (temperature, etc) and species information
+    from `hrg`, and write data to `particles`.
 
     """
     cdef:
-        Surface surface
-        HRG hrg
-        ParticleList particles
+        double N, new_N
+        double p_dot_sigma, p_dot_sigma_max
+        double y, y_minus_eta_s
+        double eta_s, cosh_eta_s, sinh_eta_s
+        double pt_prime
+        size_t ielem, ispecies
+        SurfaceElem* elem
+        SpeciesInfo* species
+        FourVector x, p
 
-    def __cinit__(self, x, sigma, v, T):
-        self.surface = Surface(np.asarray(x), np.asarray(sigma), np.asarray(v))
-        self.hrg = HRG(T)
-        self.particles = ParticleList(
-            self.surface.total_volume * self.hrg.total_density
-        )
+    N = math.log(1 - rand())
 
-    def sample(self):
-        """
-        Sample the surface once and return an array of particle data.
+    for ielem in range(surface.n):
+        elem = surface.data + ielem
 
-        """
-        with nogil:
-            self._sample()
+        new_N = N + elem.vmax*hrg.total_density
+        if new_N < 0:
+            N = new_N
+            continue
 
-        return np.asarray(<Particle[:self.particles.n]> self.particles.data)
+        for ispecies in range(hrg.n):
+            species = hrg.data + ispecies
+            N += elem.vmax*species.density
+            while N > 0:
+                # adding a negative number
+                N += math.log(1 - rand())
 
-    cdef void _sample(self) nogil:
-        """
-        Perform sampling.
+                sample_four_momentum(species, hrg.T, &p)
+                fourvec.boost_inverse(&p, &elem.u)
 
-        """
-        cdef:
-            double N, new_N
-            double p_dot_sigma, p_dot_sigma_max
-            double y, y_minus_eta_s
-            double eta_s, cosh_eta_s, sinh_eta_s
-            double pt_prime
-            size_t ielem, ispecies
-            SurfaceElem* elem
-            SpeciesInfo* species
-            FourVector x, p
+                p_dot_sigma = fourvec.dot(&p, &elem.sigma)
+                if p_dot_sigma < 0:
+                    continue
 
-        # reset particle list
-        self.particles.n = 0
+                p_dot_sigma_max = elem.vmax*fourvec.dot(&p, &elem.u)
 
-        N = math.log(1 - rand())
+                if p_dot_sigma > p_dot_sigma_max*rand():
+                    if surface.boost_invariant:
+                        y_minus_eta_s = .5*math.log((p.t + p.z)/(p.t - p.z))
+                        y = rand() - .5
+                        eta_s = y - y_minus_eta_s
+                        cosh_eta_s = math.cosh(eta_s)
+                        sinh_eta_s = math.sinh(eta_s)
 
-        for ielem in range(self.surface.n):
-            elem = self.surface.data + ielem
+                        x.t = elem.x.t*cosh_eta_s
+                        x.x = elem.x.x
+                        x.y = elem.x.y
+                        x.z = elem.x.t*sinh_eta_s
 
-            new_N = N + elem.vmax*self.hrg.total_density
-            if new_N < 0:
-                N = new_N
-                continue
+                        pt_prime = p.t
+                        p.t = pt_prime*cosh_eta_s + p.z*sinh_eta_s
+                        p.z = pt_prime*sinh_eta_s + p.z*cosh_eta_s
+                    else:
+                        x = elem.x
 
-            for ispecies in range(self.hrg.n):
-                species = self.hrg.data + ispecies
-                N += elem.vmax*species.density
-                while N > 0:
-                    # adding a negative number
-                    N += math.log(1 - rand())
+                    add_particle(particles, species, &x, &p)
 
-                    sample_four_momentum(species, self.hrg.T, &p)
-                    fourvec.boost_inverse(&p, &elem.u)
 
-                    p_dot_sigma = fourvec.dot(&p, &elem.sigma)
-                    if p_dot_sigma < 0:
-                        continue
+def sample(Surface surface not None, HRG hrg not None):
+    """
+    Sample an ensemble of particles from freeze-out hypersurface `surface`
+    using thermodynamic quantities (temperature, etc) and species information
+    from `hrg`.
 
-                    p_dot_sigma_max = elem.vmax*fourvec.dot(&p, &elem.u)
+    Return a numpy structured array with fields
 
-                    if p_dot_sigma > p_dot_sigma_max*rand():
-                        if self.surface.boost_invariant:
-                            y_minus_eta_s = .5*math.log((p.t + p.z)/(p.t - p.z))
-                            y = rand() - .5
-                            eta_s = y - y_minus_eta_s
-                            cosh_eta_s = math.cosh(eta_s)
-                            sinh_eta_s = math.sinh(eta_s)
+        - 'ID' particle ID number
+        - 'x' position four-vector
+        - 'p' momentum four-vector
 
-                            x.t = elem.x.t*cosh_eta_s
-                            x.x = elem.x.x
-                            x.y = elem.x.y
-                            x.z = elem.x.t*sinh_eta_s
+    """
+    particles = ParticleArray(
+        surface.total_volume * hrg.total_density
+    )
 
-                            pt_prime = p.t
-                            p.t = pt_prime*cosh_eta_s + p.z*sinh_eta_s
-                            p.z = pt_prime*sinh_eta_s + p.z*cosh_eta_s
-                        else:
-                            x = elem.x
+    with nogil:
+        _sample(surface, hrg, particles)
 
-                        add_particle(species, &x, &p, self.particles)
+    return np.asarray(particles)

@@ -3,7 +3,6 @@
 
 from setuptools import setup, Extension
 from Cython.Build import cythonize
-import numpy
 
 with open('README.rst') as f:
     long_description = f.read()
@@ -11,9 +10,8 @@ with open('README.rst') as f:
 # TODO only cythonize for dev builds
 ext_modules = cythonize([
     Extension(
-        'frzout.sampler',
-        ['frzout/sampler.pyx'],
-        include_dirs=[numpy.get_include()]
+        'frzout._frzout',
+        ['frzout/_frzout.pyx'],
     ),
     Extension(
         'frzout.test._test_fourvec',
