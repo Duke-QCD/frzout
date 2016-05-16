@@ -154,7 +154,7 @@ cdef void init_species(
         s.m_max    = info['mass_range'][1]
         s.atan_min = math.atan(2*(s.m0 - s.m_min)/s.width)
         s.atan_max = math.atan(2*(s.m_max - s.m0)/s.width)
-        s.bw_norm = 1/integrate_bw(s)
+        s.bw_norm  = 1/integrate_bw(s)
     else:
         s.stable   = 1
 
@@ -412,7 +412,7 @@ cdef void sample_four_momentum(
     masses (z ~ 10).
 
     """
-    cdef double m, z, r, x, P
+    cdef double m, z, r, x, E_over_T, P
 
     while True:
         if s.stable:
@@ -429,7 +429,8 @@ cdef void sample_four_momentum(
 
         # acceptance probability
         z = m/T
-        P *= s.Pscale / r / (math.exp(math.sqrt(x*x + z*z)) + s.sign)
+        E_over_T = math.sqrt(x*x + z*z)
+        P *= s.Pscale / r / (math.exp(E_over_T) + s.sign)
 
         if rand() < P:
             break
@@ -442,7 +443,7 @@ cdef void sample_four_momentum(
         double sin_theta = math.sqrt(1 - cos_theta*cos_theta)
         double phi = 6.28318530717958648*rand()  # 2*pi
 
-    p.t = T*math.sqrt(x*x + z*z)
+    p.t = T*E_over_T
     p.x = pmag*sin_theta*math.cos(phi)
     p.y = pmag*sin_theta*math.sin(phi)
     p.z = pmag*cos_theta
@@ -710,9 +711,7 @@ def sample(Surface surface not None, HRG hrg not None):
         - 'p' momentum four-vector
 
     """
-    particles = ParticleArray(
-        surface.total_volume * hrg.total_density
-    )
+    particles = ParticleArray(surface.total_volume * hrg.total_density)
 
     with nogil:
         _sample(surface, hrg, particles)
