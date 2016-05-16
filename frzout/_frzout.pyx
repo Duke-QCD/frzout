@@ -41,13 +41,15 @@ cdef class Surface:
         SurfaceElem* data
         size_t n
         double total_volume
+        double ymax
         int boost_invariant
 
     def __cinit__(
             self,
             double[:, :] x not None,
             double[:, :] sigma not None,
-            double[:, :] v not None
+            double[:, :] v not None,
+            double ymax=.5
     ):
         self.n = x.shape[0]
         self.boost_invariant = 1
@@ -62,6 +64,7 @@ cdef class Surface:
             double tau, gamma, vx, vy, vz, volume
 
         self.total_volume = 0
+        self.ymax = ymax
 
         for i in range(self.n):
             elem = self.data + i
@@ -72,10 +75,9 @@ cdef class Surface:
             elem.x.y = x[i, 2]
             elem.x.z = 0
 
-            # TODO rapidity range
-            elem.sigma.t = tau*sigma[i, 0]
-            elem.sigma.x = tau*sigma[i, 1]
-            elem.sigma.y = tau*sigma[i, 2]
+            elem.sigma.t = 2*ymax*tau*sigma[i, 0]
+            elem.sigma.x = 2*ymax*tau*sigma[i, 1]
+            elem.sigma.y = 2*ymax*tau*sigma[i, 2]
             elem.sigma.z = 0
 
             vx = v[i, 0]
@@ -679,7 +681,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
                 if p_dot_sigma > p_dot_sigma_max*rand():
                     if surface.boost_invariant:
                         y_minus_eta_s = .5*math.log((p.t + p.z)/(p.t - p.z))
-                        y = rand() - .5
+                        y = surface.ymax*(2*rand() - 1)
                         eta_s = y - y_minus_eta_s
                         cosh_eta_s = math.cosh(eta_s)
                         sinh_eta_s = math.sinh(eta_s)
