@@ -26,6 +26,8 @@ __all__ = ['Surface', 'HRG', 'sample']
 
 random.seed()
 
+DEF TWO_PI = 6.28318530717958648
+
 
 cdef struct SurfaceElem:
     FourVector x, sigma, u
@@ -443,7 +445,7 @@ cdef void sample_four_momentum(
         # sample 3D direction
         double cos_theta = 2*rand() - 1
         double sin_theta = math.sqrt(1 - cos_theta*cos_theta)
-        double phi = 6.28318530717958648*rand()  # 2*pi
+        double phi = TWO_PI*rand()
 
     p.t = T*E_over_T
     p.x = pmag*sin_theta*math.cos(phi)
@@ -462,8 +464,12 @@ cdef class HRG:
         size_t n
         double T
         double total_density
+        int decay_f500
 
-    def __cinit__(self, double T, object species='all', bint res_width=True):
+    def __cinit__(
+            self, double T,
+            object species='all', bint res_width=True, bint decay_f500=False
+    ):
         self.T = T
 
         cdef list species_items = _normalize_species(species)
@@ -472,6 +478,8 @@ cdef class HRG:
         self.data = <SpeciesInfo*> PyMem_Malloc(self.n * sizeof(SpeciesInfo))
         if not self.data:
             raise MemoryError()
+
+        self.decay_f500 = (decay_f500 or species == 'urqmd')
 
         self.total_density = 0
 
@@ -615,7 +623,7 @@ cdef inline void increase_capacity(ParticleArray particles) with gil:
 
 cdef inline void add_particle(
     ParticleArray particles,
-    const SpeciesInfo* species,
+    const int ID,
     const FourVector* x,
     const FourVector* p
 ) nogil:
@@ -627,11 +635,122 @@ cdef inline void add_particle(
         increase_capacity(particles)
 
     cdef Particle* part = particles.data + particles.n
-    part.ID = species.ID
+    part.ID = ID
     part.x = x[0]
     part.p = p[0]
 
     particles.n += 1
+
+
+cdef void decay_f500(ParticleArray particles) nogil:
+    """
+    Decay all f(0)(500) resonances into pion pairs.
+
+    Workaround for afterburners e.g. UrQMD that aren't aware of the f(0)(500).
+
+    """
+    # For each f(0)(500) in the particle array, do the following:
+    #   - Replace with a pion and also create a new pion.
+    #   - Compute the momenta of the daughter pions in the parent's rest frame
+    #     (basic kinematics).
+    #   - Assign daughter pions equal and opposite momenta (with a random
+    #     isotropic angle) in the parent's rest frame.
+    #   - Boost each daughter pion from the parent's rest frame.
+    #   - Freestream each pion by a short time so they don't exactly overlap.
+
+    cdef:
+        # loop index
+        size_t i
+        # original number of particles (will increase as pions are produced)
+        size_t nparts = particles.n
+        # parent and daughter particles mass and momentum
+        double M, P, m, p
+        # spherical angles
+        double cos_theta, sin_theta, phi
+        # to save some typing
+        Particle* part
+        # ID number of second daughter particle
+        int ID2
+        # four-velocity and position of parent particle
+        FourVector u, x
+        # four-momentum of daughters in parent's rest frame
+        FourVector p_prime
+
+    for i in range(nparts):
+        part = particles.data + i
+
+        # skip all but f(0)(500)
+        if part.ID != 9000221:
+            continue
+
+        # choose decay channel:
+        #   pi0 pi0  (1/3)
+        #   pi+ pi-  (2/3)
+        if rand() < .333333333:
+            part.ID = 111
+            ID2 = 111
+            m = .1349766
+        else:
+            part.ID = 211
+            ID2 = -211
+            m = .13957018
+
+        # momentum and mass of parent
+        P = math.sqrt(part.p.x**2 + part.p.y**2 + part.p.z**2)
+        M = math.sqrt(part.p.t**2 - P*P)
+
+        # four-velocity of parent
+        u.t = part.p.t/M
+        u.x = part.p.x/M
+        u.y = part.p.y/M
+        u.z = part.p.z/M
+
+        # save parent particle position
+        x = part.x
+
+        # momentum magnitude of daughters in parent's rest frame
+        p = math.sqrt(M*M - 4*m*m)/2
+
+        # sample isotropic direction
+        cos_theta = 2*rand() - 1
+        sin_theta = math.sqrt(1 - cos_theta*cos_theta)
+        phi = TWO_PI*rand()
+
+        # first daughter's four-momentum in parent's rest frame
+        p_prime.t = M/2
+        p_prime.x = p*sin_theta*math.cos(phi)
+        p_prime.y = p*sin_theta*math.sin(phi)
+        p_prime.z = p*cos_theta
+
+        # boost and freestream first daughter
+        part.p = p_prime
+        fourvec.boost_inverse(&part.p, &u)
+        freestream(part, .1)
+
+        # create second daughter pion at parent's spacetime position
+        # and momentum opposite to first daughter in parent's rest frame
+        p_prime.x *= -1
+        p_prime.y *= -1
+        p_prime.z *= -1
+        add_particle(particles, ID2, &x, &p_prime)
+
+        # boost and freestream second daughter
+        part = particles.data + particles.n - 1
+        fourvec.boost_inverse(&part.p, &u)
+        freestream(part, .1)
+
+
+cdef void freestream(Particle* part, double t) nogil:
+    """
+    Freestream a particle for the given time:
+
+        x -> x + v*t, v = p/E
+
+    """
+    cdef double t_over_E = t / part.p.t
+    part.x.x += part.p.x * t_over_E
+    part.x.y += part.p.y * t_over_E
+    part.x.z += part.p.z * t_over_E
 
 
 cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
@@ -697,7 +816,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
                     else:
                         x = elem.x
 
-                    add_particle(particles, species, &x, &p)
+                    add_particle(particles, species.ID, &x, &p)
 
 
 def sample(Surface surface not None, HRG hrg not None):
@@ -717,5 +836,7 @@ def sample(Surface surface not None, HRG hrg not None):
 
     with nogil:
         _sample(surface, hrg, particles)
+        if hrg.decay_f500:
+            decay_f500(particles)
 
     return np.asarray(particles)

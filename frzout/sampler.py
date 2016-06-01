@@ -12,11 +12,16 @@ class Sampler(object):
     Main sampler class.
 
     """
-    def __init__(self, x, sigma, v, T, ymax=.5, species='all', res_width=True):
+    def __init__(
+            self, x, sigma, v, T, ymax=.5,
+            species='all', res_width=True, decay_f500=False
+    ):
         self._surface = Surface(
             np.asarray(x), np.asarray(sigma), np.asarray(v), ymax=ymax
         )
-        self._hrg = HRG(T, species, res_width)
+        self._hrg = HRG(
+            T, species=species, res_width=res_width, decay_f500=decay_f500
+        )
 
     @property
     def surface(self):
