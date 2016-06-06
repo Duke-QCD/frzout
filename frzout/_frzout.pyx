@@ -748,6 +748,7 @@ cdef void freestream(Particle* part, double t) nogil:
 
     """
     cdef double t_over_E = t / part.p.t
+    part.x.t += t
     part.x.x += part.p.x * t_over_E
     part.x.y += part.p.y * t_over_E
     part.x.z += part.p.z * t_over_E
