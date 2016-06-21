@@ -1,13 +1,14 @@
+# distutils: include_dirs = frzout
+
 from libc cimport math
 
 from .. cimport fourvec
 from ..fourvec cimport FourVector
-from .. cimport random
-from ..random cimport rand
+from ..random cimport seed_rand, rand
 
 
 def _test_fourvec():
-    random.seed()
+    seed_rand()
 
     cdef:
         double vmax = .99/math.sqrt(3)

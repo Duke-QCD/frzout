@@ -10,8 +10,7 @@ from cpython.buffer cimport Py_buffer, PyBUF_FORMAT
 
 from . cimport fourvec
 from .fourvec cimport FourVector
-from . cimport random
-from .random cimport rand
+from .random cimport seed_rand, rand
 
 cdef extern from "quadrature.h":
     size_t NQUADPTS_M, NQUADPTS_P
@@ -24,7 +23,7 @@ cdef extern from "quadrature.h":
 __all__ = ['Surface', 'HRG', 'sample']
 
 
-random.seed()
+seed_rand()
 
 DEF TWO_PI = 6.28318530717958648
 
