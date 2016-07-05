@@ -461,7 +461,7 @@ cdef class HRG:
     cdef:
         SpeciesInfo* data
         size_t n
-        double T
+        readonly double T
         double total_density
         int decay_f500
 
