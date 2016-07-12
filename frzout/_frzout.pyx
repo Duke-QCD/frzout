@@ -1,5 +1,7 @@
 # cython: boundscheck = False, wraparound = False, initializedcheck = False
 
+import warnings
+
 import numpy as np
 
 from .species import species_dict, _normalize_species
@@ -43,7 +45,7 @@ cdef class Surface:
         size_t n
         double total_volume
         double ymax
-        int boost_invariant
+        readonly bint boost_invariant
 
     def __cinit__(
             self,
@@ -53,7 +55,16 @@ cdef class Surface:
             double ymax=.5
     ):
         self.n = x.shape[0]
-        self.boost_invariant = 1
+
+        if x.shape[1] == 4 and sigma.shape[1] == 4 and v.shape[1] == 3:
+            self.boost_invariant = 0
+            if ymax != .5:
+                warnings.warn('ymax has no effect for 3D surfaces')
+        elif x.shape[1] == 3 and sigma.shape[1] == 3 and v.shape[1] == 2:
+            self.boost_invariant = 1
+        else:
+            # TODO more informative error message
+            raise ValueError('invalid shape')
 
         self.data = <SurfaceElem*> PyMem_Malloc(self.n * sizeof(SurfaceElem))
         if not self.data:
@@ -62,7 +73,7 @@ cdef class Surface:
         cdef:
             size_t i
             SurfaceElem* elem
-            double tau, gamma, vx, vy, vz, volume
+            double gamma, vx, vy, vz, volume, sigma_scale
 
         self.total_volume = 0
         self.ymax = ymax
@@ -70,20 +81,33 @@ cdef class Surface:
         for i in range(self.n):
             elem = self.data + i
 
-            tau = x[i, 0]
-            elem.x.t = tau
+            # read in transverse data first
+            elem.x.t = x[i, 0]
             elem.x.x = x[i, 1]
             elem.x.y = x[i, 2]
-            elem.x.z = 0
 
-            elem.sigma.t = 2*ymax*tau*sigma[i, 0]
-            elem.sigma.x = 2*ymax*tau*sigma[i, 1]
-            elem.sigma.y = 2*ymax*tau*sigma[i, 2]
-            elem.sigma.z = 0
+            elem.sigma.t = sigma[i, 0]
+            elem.sigma.x = sigma[i, 1]
+            elem.sigma.y = sigma[i, 2]
 
             vx = v[i, 0]
             vy = v[i, 1]
-            vz = 0
+
+            # handle longitudinal direction depending on boost invariance
+            if self.boost_invariant:
+                elem.x.z = 0
+                elem.sigma.z = 0
+                vz = 0
+                # scale dsigma by (2*ymax*tau)
+                sigma_scale = 2*ymax*x[i, 0]
+                elem.sigma.t *= sigma_scale
+                elem.sigma.x *= sigma_scale
+                elem.sigma.y *= sigma_scale
+            else:
+                elem.x.z = x[i, 3]
+                elem.sigma.z = sigma[i, 3]
+                vz = v[i, 2]
+
             gamma = 1/math.sqrt(1 - vx*vx - vy*vy - vz*vz)
             elem.u.t = gamma
             elem.u.x = gamma*vx
