@@ -154,25 +154,32 @@ hbarc = 0.1973269788
 @section
 def stationary_box(axes):
     """
-    A single boost-invariant surface element with zero flow velocity.
+    A single boost-invariant volume element with zero flow velocity.
     This is a rudimentary test case with easily-calculated observables.
 
     """
-    volume = 5000.
+    volume = 3000.
     tau = 1.
     T = .15
+    ymax = np.random.uniform(.5, .8)
 
     info = [frzout.species_dict[i] for (i, _) in id_parts]
     m = np.array([i['mass'] for i in info])
     g = np.array([i['degen'] for i in info])
-    densities = g * m*m*T * special.kn(2, m/T) / (2*np.pi**2*hbarc**3)
-    yields = volume * densities
+    sign = np.array([-1 if i['boson'] else 1 for i in info])
+
+    n = np.arange(1, 10)
+    densities = g * m*m*T / (2*np.pi**2*hbarc**3) * (
+        np.power.outer(-sign, n-1)/n *
+        special.kn(2, np.outer(m, n)/T)
+    ).sum(axis=1)
+    yields = 2*ymax * volume * densities
 
     x = np.array([[tau, 0, 0]])
     sigma = np.array([[volume/tau, 0, 0]])
     v = np.zeros((1, 2))
 
-    sampler = frzout.Sampler(x, sigma, v, T)
+    sampler = frzout.Sampler(x, sigma, v, T, ymax=ymax)
 
     nsamples = 1000
     samples = list(sampler.iter_samples(nsamples))
@@ -186,16 +193,17 @@ def stationary_box(axes):
             'These are histograms of particle counts from many oversamples. '
             'Production of each species should be Poissonian:'
     ) as ax:
-        for (i, label), n in zip(id_parts, yields):
-            dist = stats.poisson(n)
+        for (i, label), N in zip(id_parts, yields):
+            dist = stats.poisson(N)
             x = np.arange(*dist.ppf([.001, .999]).astype(int))
             ax.plot(x, dist.pmf(x), color=default_color)
             ax.hist([np.count_nonzero(s.ID == i) for s in samples],
                     bins=20, normed=True, histtype='step',
                     label=label.replace(r'\pm', '+').replace(r' \bar p', ''))
 
-        ax.set_xlabel('$N$')
-        ax.set_ylabel('$P(N)$')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Probability')
+        ax.set_yticklabels([])
         ax.legend()
 
     with axes(caption=(
@@ -208,27 +216,33 @@ def stationary_box(axes):
         ax.plot(x, dist.pmf(x), color=default_color)
         ax.hist(N, bins=30, normed=True,
                 histtype='step', color=color_cycle[-1])
-        ax.set_xlabel('$N$')
-        ax.set_ylabel('$P(N)$')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Probability')
+        ax.set_yticklabels([])
 
     with axes('Transverse momentum', 'Spectra are perfectly thermal:') as ax:
         pT = np.sqrt(px*px + py*py)
         pT_plot = np.linspace(0, 3, 1000)
-        for n, (i, label) in enumerate(id_parts):
+        for k, (i, label) in enumerate(id_parts):
             mT = np.sqrt(frzout.species_dict[i]['mass']**2 + pT_plot**2)
             dN_dpT = 2*(
-                volume * frzout.species_dict[i]['degen'] *
-                2*mT*special.k1(mT/T) / (2*np.pi*hbarc)**3
+                volume * frzout.species_dict[i]['degen'] * (
+                    np.outer(
+                        2*mT,
+                        (1 if frzout.species_dict[i]['boson'] else -1)**(n-1)
+                    ) * special.k1(np.outer(mT, n)/T)
+                ).sum(axis=1) / (2*np.pi*hbarc)**3
             )
-            scale = 10**(-2*n)
+            scale = 10**(-2*k)
             ax.plot(pT_plot, dN_dpT*scale, color=default_color)
             pT_ = pT[abs_ID == i]
             bins = np.linspace(0, pT_.max(), 50)
             ax.hist(
                 pT_, bins=bins,
-                weights=bins.size/bins.ptp()*scale/(2*np.pi*pT_*nsamples),
+                weights=bins.size/bins.ptp()*scale/(
+                    2*np.pi*pT_*2*ymax*nsamples),
                 histtype='step', log=True,
-                label=r'{} $({{\times}}10^{{{:d}}})$'.format(label, -2*n)
+                label=r'{} $({{\times}}10^{{{:d}}})$'.format(label, -2*k)
             )
 
         ax.set_xlabel('$p_T\ [\mathrm{GeV}]$')
@@ -239,8 +253,8 @@ def stationary_box(axes):
     with axes('Rapidity', '`dN/dy` should be flat:') as ax:
         y = .5*np.log((E + pz)/(E - pz))
         nbins = 50
-        for (i, label), n in zip(id_parts, yields):
-            ax.plot([-.5, .5], [2*n]*2, color=default_color)
+        for (i, label), N in zip(id_parts, yields):
+            ax.plot([-ymax, ymax], [2*N]*2, color=default_color)
             y_ = y[abs_ID == i]
             ax.hist(y_, bins=nbins, weights=np.full_like(y_, nbins/nsamples),
                     histtype='step', log=True, label=label)
@@ -252,8 +266,8 @@ def stationary_box(axes):
     with axes('Azimuthal angle', '`dN/d\phi` should be flat:') as ax:
         phi = np.arctan2(py, px)
         nbins = 50
-        for (i, label), n in zip(id_parts, yields):
-            ax.plot([-np.pi, np.pi], [2*n]*2, color=default_color)
+        for (i, label), N in zip(id_parts, yields):
+            ax.plot([-np.pi, np.pi], [2*N]*2, color=default_color)
             phi_ = phi[abs_ID == i]
             ax.hist(phi_, bins=nbins,
                     weights=np.full_like(phi_, nbins/nsamples),
