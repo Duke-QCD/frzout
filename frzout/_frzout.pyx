@@ -66,6 +66,10 @@ cdef class Surface:
             # TODO more informative error message
             raise ValueError('invalid shape')
 
+        if sigma.shape[0] != self.n or v.shape[0] != self.n:
+            # TODO more informative error message
+            raise ValueError('invalid shape')
+
         self.data = <SurfaceElem*> PyMem_Malloc(self.n * sizeof(SurfaceElem))
         if not self.data:
             raise MemoryError()
