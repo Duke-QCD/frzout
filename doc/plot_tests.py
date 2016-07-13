@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import integrate
 from scipy import special
 from scipy import stats
 from sphinx.util import console
@@ -280,9 +281,177 @@ def stationary_box(axes):
 
 
 @section
-def realistic_surface(axes):
+def moving_box(axes):
     """
-    Event-by-event 2D hypersurface.
+    A single 3D volume element with nonzero flow velocity (but still zero
+    normal vector to avoid negative contributions).  Histograms of sampled (x,
+    y, z) momenta are compared to distributions computed by numerically
+    integrating the distribution functions.
 
     """
-    pass
+    T = .15
+    x = np.array([[1, 0, 0, 0]], dtype=float)
+
+    for ID, name in id_parts:
+        info = frzout.species_dict[ID]
+        m = info['mass']
+        g = info['degen']
+        sign = -1 if info['boson'] else 1
+
+        hrg = frzout.HRG(T, species=[ID])
+
+        v = np.atleast_2d([np.random.uniform(-i, i) for i in [.5, .5, .7]])
+        gamma = 1/np.sqrt(1 - (v*v).sum())
+        ux, uy, uz = gamma*v.ravel()
+
+        volume = 1e6/hrg.density()
+        sigma = np.array([[volume, 0, 0, 0]])
+        surface = frzout.Surface(x, sigma, v)
+
+        parts = frzout.sample(surface, hrg)
+        psamples = parts['p'].T[1:]
+
+        # 3D lattice of momentum points
+        P = [np.linspace(1.05*p.min(), 1.05*p.max(), 100) for p in psamples]
+        Px, Py, Pz = np.meshgrid(*P, indexing='ij')
+        dp = [p.ptp()/(p.size - 1) for p in P]
+
+        # evaluate distribution function on lattice
+        E = np.sqrt(m*m + Px*Px + Py*Py + Pz*Pz)
+        f = 1/(np.exp((E*gamma - Px*ux - Py*uy - Pz*uz)/T) + sign)
+        f *= 2*g/(2*np.pi*hbarc)**3
+
+        with axes(name.replace('$', '`') + ' momentum') as ax:
+            ax.set_yscale('log')
+
+            ax.annotate(
+                '\n'.join([
+                    '$v_{} = {:+.4f}$'.format(*i)
+                    for i in zip(['x', 'y', 'z'], v.flat)
+                ]),
+                (.04, .95), xycoords='axes fraction', ha='left', va='top'
+            )
+
+            nbins = 50
+            for i, (p, c) in enumerate(zip(psamples, ['x', 'y', 'z'])):
+                ax.hist(
+                    p, bins=nbins,
+                    weights=np.full_like(p, nbins/p.ptp()/volume),
+                    histtype='step', label='$p_{}$'.format(c)
+                )
+                j, k = set(range(3)) - {i}
+                # evaluate f along axis i by integrating out axes (j, k)
+                ax.plot(
+                    P[i], dp[j] * dp[k] * f.sum(axis=(j, k)),
+                    color=default_color
+                )
+
+            ax.set_xlabel('$p\ [\mathrm{GeV}]$')
+            ax.set_ylabel('$dN/dp\ [\mathrm{GeV}^{-1}]$')
+            ax.legend()
+
+
+@section
+def resonance_mass_distributions(axes):
+    """
+    Verification of mass disributions for several resonance species.  Grey
+    dashed lines are the Breit-Wigner distributions with mass-dependent width,
+    grey solid lines are the same distributions with momentum integrated out,
+    and colored lines are histograms of the sampled masses.
+
+    """
+    with axes() as ax:
+        T = .15
+
+        for ID, name in [
+                (213, r'$\rho(770)$'),
+                (2214, r'$\Delta(1232)$'),
+                (22212, r'$N(1535)$'),
+        ]:
+            info = frzout.species_dict[ID]
+            m0 = info['mass']
+            w0 = info['width']
+            m_min, m_max = info['mass_range']
+            sign = -1 if info['boson'] else 1
+
+            def bw(m):
+                w = w0*np.sqrt((m - m_min)/(m0 - m_min))
+                return w/((m - m0)**2 + w*w/4)
+
+            def f(p, m):
+                return p*p / (np.exp(np.sqrt(p*p + m*m)/T) + sign)
+
+            m = np.linspace(m_min, m_max, 200)
+
+            ax.plot(m, bw(m)/integrate.quad(bw, m_min, m_max)[0],
+                    color=default_color, ls='dashed')
+
+            bwf = np.array([
+                integrate.quad(lambda p: bw(m_)*f(p, m_), 0, 5)[0] for m_ in m
+            ]) / integrate.dblquad(
+                lambda m_, p: bw(m_)*f(p, m_),
+                0, 5, lambda _: m_min, lambda _: m_max
+            )[0]
+
+            ax.plot(m, bwf, color=default_color)
+
+            hrg = frzout.HRG(T, species=[ID], res_width=True)
+
+            x = np.array([[1, 0, 0, 0]], dtype=float)
+            sigma = np.array([[1e6/hrg.density(), 0, 0, 0]])
+            v = np.zeros((1, 3))
+            surface = frzout.Surface(x, sigma, v)
+
+            parts = frzout.sample(surface, hrg)
+            m = np.sqrt(np.inner(parts['p']**2, [1, -1, -1, -1]))
+
+            ax.hist(m, bins=64, normed=True, histtype='step', label=name)
+
+        ax.set_xlim(0, 2)
+        ax.set_xlabel('Mass [GeV]')
+        ax.set_ylabel('Probability')
+        ax.set_yticklabels([])
+
+        ax.legend(loc='upper left')
+
+
+@section
+def equation_of_state(axes):
+    """
+    Comparison of thermodynamic quantities from phase-space integrals (grey
+    dashed lines) to averages over sampled particles (solid colored lines).
+
+    """
+    with axes() as ax:
+        volume = 1e6
+        x = np.array([[1, 0, 0, 0]], dtype=float)
+        sigma = np.array([[volume, 0, 0, 0]])
+        v = np.zeros((1, 3))
+        surface = frzout.Surface(x, sigma, v)
+
+        def eos_quantities(T):
+            hrg = frzout.HRG(T, res_width=False)
+            parts = frzout.sample(surface, hrg)
+            E = parts['p'][:, 0]
+            psq = (parts['p'][:, 1:]**2).sum(axis=1)
+
+            T3 = (T/hbarc)**3
+            T4 = T * T3
+
+            return [
+                (hrg.density()/T3, parts.size/volume/T3),
+                (hrg.energy_density()/T4, E.sum()/volume/T4),
+                (3*hrg.pressure()/T4, 3*(psq/(3*E)).sum()/volume/T4),
+            ]
+
+        T = np.linspace(100, 180, 20)/1000
+
+        for quantity, label in zip(
+                np.array([eos_quantities(t) for t in T]).transpose(1, 2, 0),
+                ['$n/T^3$', '$\epsilon/T^4$', '$3p/T^4$']
+        ):
+            ax.plot(T, quantity[1], label=label)
+            ax.plot(T, quantity[0], color=default_color, ls='dashed')
+
+        ax.set_xlabel('Temperature [GeV]')
+        ax.legend(loc='upper left')
