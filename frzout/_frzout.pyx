@@ -309,11 +309,18 @@ cdef double integrate_bw(const SpeciesInfo* s) nogil:
 
 cdef enum IntegralType:
     DENSITY
+    MOMENTUM_DENSITY
     ENERGY_DENSITY
     PRESSURE
+    CS2_NUMER
+    CS2_DENOM
+    ETA_OVER_TAU
+    ZETA_OVER_TAU
+    DELTA_DENSITY
+    DELTA_MOMENTUM_DENSITY
 
 cdef double integrate_species_stable(
-    double m, int sign, double T, IntegralType integral
+    double m, int sign, double T, double cs2, IntegralType integral
 ) nogil:
     """
     Integrate over momentum, for stable species with zero mass width:
@@ -338,27 +345,47 @@ cdef double integrate_species_stable(
     """
     cdef:
         double total = 0
-        double zsq = (m/T)**2
-        double xsq
-        double E_over_T
-        double g
+        double p, psq
+        double E, Esq
+        double f0, g
         size_t i
 
     for i in range(NQUADPTS_P):
         # x = p/T from quadrature table
-        xsq = quadpts_p[i].x**2
-        E_over_T = math.sqrt(zsq + xsq)
+        p = quadpts_p[i].x * T
+        psq = p*p
+        Esq = m*m + psq
+        E = math.sqrt(Esq)
+        f0 = 1 / (math.exp(E/T) + sign)
 
+        # compute inner function
         if integral == DENSITY:
             g = 1
+        elif integral == MOMENTUM_DENSITY:
+            g = p
         elif integral == ENERGY_DENSITY:
-            g = T * E_over_T
+            g = E
         elif integral == PRESSURE:
-            g = T * xsq/(3*E_over_T)
+            g = psq/(3*E)
+        # remaining integrals have f0*(1 -/+ f0)
+        elif integral == CS2_NUMER:
+            g = psq/3 * (1 - sign*f0)
+        elif integral == CS2_DENOM:
+            g = Esq * (1 - sign*f0)
+        elif integral == ETA_OVER_TAU:
+            g = psq*psq/Esq / (15*T) * (1 - sign*f0)
+        elif integral == ZETA_OVER_TAU:
+            g = m*m / (3*T) * (cs2 - psq/(3*Esq)) * (1 - sign*f0)
+        # These are proportional to the change in density and momentum density
+        # due to the bulk delta-f.  They must be multiplied by Pi/(zeta/tau).
+        elif integral == DELTA_DENSITY:
+            g = (psq/(3*E) - cs2*E)/T * (1 - sign*f0)
+        elif integral == DELTA_MOMENTUM_DENSITY:
+            g = (psq/(3*E) - cs2*E)/T * (1 - sign*f0) * p
         else:
             return 0
 
-        total += quadpts_p[i].w * g / (math.exp(E_over_T) + sign)
+        total += quadpts_p[i].w * g * f0
 
     # Multiply by T^3 to account for the change of variables d^3p -> d^3x.
     # The quadrature weights already include all other prefactors.
@@ -366,7 +393,7 @@ cdef double integrate_species_stable(
 
 
 cdef double integrate_species_unstable(
-    const SpeciesInfo* s, double T, IntegralType integral
+    const SpeciesInfo* s, double T, double cs2, IntegralType integral
 ) nogil:
     """
     Integrate over mass and momentum, for unstable resonances with finite mass
@@ -389,26 +416,29 @@ cdef double integrate_species_unstable(
         m2 = s.m_min + dm*(1 - quadpts_m[i].x)
 
         total += quadpts_m[i].w * (
-            bw_dist(s, m1)*integrate_species_stable(m1, s.sign, T, integral) +
-            bw_dist(s, m2)*integrate_species_stable(m2, s.sign, T, integral)
+            bw_dist(s, m1)*integrate_species_stable(m1, s.sign, T, cs2, integral) +
+            bw_dist(s, m2)*integrate_species_stable(m2, s.sign, T, cs2, integral)
         )
 
     return s.bw_norm * dm * total
 
 
 cdef double integrate_species(
-    const SpeciesInfo* s, double T, IntegralType integral
+    const SpeciesInfo* s, double T, double cs2, IntegralType integral
 ) nogil:
     """
     Compute a phase-space integral for the given species and temperature.
+
+    The speed of sound squared `cs2` is required for anything related to bulk
+    viscosity, otherwise it is not used.
 
     """
     cdef double I
 
     if s.stable:
-        I = integrate_species_stable(s.m0, s.sign, T, integral)
+        I = integrate_species_stable(s.m0, s.sign, T, cs2, integral)
     else:
-        I = integrate_species_unstable(s, T, integral)
+        I = integrate_species_unstable(s, T, cs2, integral)
 
     return s.degen * I
 
@@ -526,7 +556,7 @@ cdef class HRG:
     def __len__(self):
         return self.n
 
-    cdef double _sum_integrals(self, IntegralType integral):
+    cdef double _sum_integrals(self, IntegralType integral, double cs2=0):
         """
         Compute the sum of the given phase-space integral over all the species
         in this HRG.
@@ -537,11 +567,11 @@ cdef class HRG:
             size_t i
 
         with nogil:
-            total = last = integrate_species(self.data, self.T, integral)
+            total = last = integrate_species(self.data, self.T, cs2, integral)
             for i in range(1, self.n):
                 # reuse previous calculation if possible
                 if not equiv_species(self.data + i, self.data + i - 1):
-                    last = integrate_species(self.data + i, self.T, integral)
+                    last = integrate_species(self.data + i, self.T, cs2, integral)
                 total += last
 
         return total
@@ -554,19 +584,54 @@ cdef class HRG:
         # return self._sum_integrals(DENSITY)
         return self.total_density
 
-    def energy_density(self):
+    cpdef double energy_density(self):
         """
         Energy density [GeV/fm^-3].
 
         """
         return self._sum_integrals(ENERGY_DENSITY)
 
-    def pressure(self):
+    cpdef double pressure(self):
         """
         Pressure [GeV/fm^-3].
 
         """
         return self._sum_integrals(PRESSURE)
+
+    def entropy_density(self):
+        """
+        Entropy density [fm^-3].
+
+        """
+        return (self.energy_density() + self.pressure()) / self.T
+
+    def mean_momentum(self):
+        """
+        Average magnitude of momentum [GeV].
+
+        """
+        return self._sum_integrals(MOMENTUM_DENSITY) / self.total_density
+
+    cpdef double cs2(self):
+        """
+        Speed of sound squared.
+
+        """
+        return self._sum_integrals(CS2_NUMER) / self._sum_integrals(CS2_DENOM)
+
+    cpdef double eta_over_tau(self):
+        """
+        Shear viscosity over relaxation time [GeV/fm^-3].
+
+        """
+        return self._sum_integrals(ETA_OVER_TAU)
+
+    cpdef double zeta_over_tau(self):
+        """
+        Bulk viscosity over relaxation time [GeV/fm^-3].
+
+        """
+        return self._sum_integrals(ZETA_OVER_TAU, cs2=self.cs2())
 
 
 # represents a sampled particle
