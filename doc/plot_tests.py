@@ -96,6 +96,7 @@ def setup(app):
 
 
 default_color = '#404040'
+dashed_line = dict(color=default_color, linestyle='dashed')
 color_cycle = [
     getattr(plt.cm, c)(.8) for c in
     ['Blues', 'Greens', 'Oranges', 'Purples']
@@ -384,7 +385,7 @@ def resonance_mass_distributions(axes):
             m = np.linspace(m_min, m_max, 200)
 
             ax.plot(m, bw(m)/integrate.quad(bw, m_min, m_max)[0],
-                    color=default_color, ls='dashed')
+                    **dashed_line)
 
             bwf = np.array([
                 integrate.quad(lambda p: bw(m_)*f(p, m_), 0, 5)[0] for m_ in m
@@ -451,7 +452,177 @@ def equation_of_state(axes):
                 ['$n/T^3$', '$\epsilon/T^4$', '$3p/T^4$']
         ):
             ax.plot(T, quantity[1], label=label)
-            ax.plot(T, quantity[0], color=default_color, ls='dashed')
+            ax.plot(T, quantity[0], **dashed_line)
 
         ax.set_xlabel('Temperature [GeV]')
         ax.legend(loc='upper left')
+
+
+@section
+def bulk_viscous_corrections(axes):
+    """
+    Effect of bulk viscosity on thermodynamic quantities and momentum
+    distributions.
+
+    The total pressure is the sum of the equilibrium and bulk pressures:
+    `P = P_0 + \Pi`.
+
+    Most quantities are plotted as the relative change to their equilibrium
+    values vs. the relative bulk pressure `\Pi/P_0`.  Colored lines are from
+    samples and dashed lines are calculated.
+
+    The algorithm starts to break down at very large bulk pressure, however in
+    realistic events the bulk pressure is mostly small and negative, roughly
+    `-0.2P_0 < \Pi < 0`.
+
+    """
+    T = .15
+    hrg = frzout.HRG(T, res_width=False)
+
+    volume = 2e6/hrg.density()
+    x = np.array([[1., 0, 0, 0]])
+    sigma = np.array([[volume, 0, 0, 0]])
+    v = np.zeros((1, 3))
+
+    def sample_bulk(Pi):
+        surface = frzout.Surface(x, sigma, v, Pi=np.array([Pi]))
+        parts = frzout.sample(surface, hrg)
+
+        E = parts['p'][:, 0]
+        psq = (parts['p'][:, 1:]**2).sum(axis=1)
+
+        return (
+            E.sum()/volume,
+            (psq/(3*E)).sum()/volume,
+            [(p.size/volume/2, p.mean()) for p in (
+                np.sqrt(psq[np.abs(parts['ID']) == i]) for (i, _) in id_parts
+            )]
+        )
+
+    P0 = hrg.pressure()
+    e0 = hrg.energy_density()
+
+    Pi_frac = np.linspace(-.5, .5, 21)
+    Pi = Pi_frac * P0
+
+    e, P, id_parts_samples = (
+        np.array(i) for i in zip(*[sample_bulk(x*P0) for x in Pi_frac])
+    )
+
+    with axes(
+            'Pressure and energy density',
+            'Bulk pressure changes the effective pressure without changing '
+            'the energy density.'
+    ) as ax:
+        ax.plot(Pi_frac, P/P0 - 1, label='Pressure')
+        ax.plot(Pi_frac, Pi_frac, **dashed_line)
+
+        ax.plot(Pi_frac, e/e0 - 1, label='Energy density')
+        ax.axhline(0, **dashed_line)
+
+        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
+        ax.set_ylim(Pi_frac.min(), Pi_frac.max())
+
+        ax.set_xlabel('$\Pi/P_0$')
+        ax.set_ylabel('$\Delta P/P_0,\; \Delta\epsilon/\epsilon_0$')
+        ax.legend(loc='upper left')
+
+    density, pavg = id_parts_samples.T
+
+    zeta_over_tau = hrg.zeta_over_tau()
+    cs2 = hrg.cs2()
+
+    def f(p, ID, Pi=0):
+        m, boson, g = (
+            frzout.species_dict[ID][k] for k in ['mass', 'boson', 'degen']
+        )
+        s = -1 if boson else 1
+        E = np.sqrt(m*m + p*p)
+        f0 = 1/(np.exp(E/T) + s)
+        df = Pi/(T*zeta_over_tau)*(p*p/(3*E) - cs2*E)*f0*(1 - s*f0)
+        return g*(f0 + df)
+
+    def int_f(ID, Pi=0, inner=lambda p: 1):
+        return (4*np.pi)/(2*np.pi*hbarc)**3 * integrate.quad(
+            lambda p: p*p*inner(p)*f(p, ID, Pi), 0, 10
+        )[0]
+
+    def calc_density(ID, Pi=0):
+        return int_f(ID, Pi)
+
+    def calc_pavg(ID, Pi=0):
+        return int_f(ID, Pi, inner=lambda p: p) / calc_density(ID, Pi)
+
+    with axes(
+            'Particle densities',
+            'Changes in density are proportional to bulk pressure '
+            'by construction.'
+    ) as ax:
+        for n, (i, label) in zip(density, id_parts):
+            n0 = calc_density(i)
+            ncalc = np.array([calc_density(i, Pi_) for Pi_ in Pi])
+            ax.plot(Pi_frac, n/n0 - 1, label=label)
+            ax.plot(Pi_frac, ncalc/n0 - 1, **dashed_line)
+
+        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
+
+        ax.set_xlabel('$\Pi/P_0$')
+        ax.set_ylabel('$\Delta n/n_0$')
+        ax.legend(loc='upper left')
+
+    with axes('Average momenta') as ax:
+        for p, (i, label) in zip(pavg, id_parts):
+            p0 = calc_pavg(i)
+            pcalc = np.array([calc_pavg(i, Pi_) for Pi_ in Pi])
+            ax.plot(Pi_frac, p/p0 - 1, label=label)
+            ax.plot(Pi_frac, pcalc/p0 - 1, **dashed_line)
+
+        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
+
+        ax.set_xlabel('$\Pi/P_0$')
+        ax.set_ylabel(r'$\Delta\langle p \rangle/\langle p \rangle_0$')
+        ax.legend(loc='upper left')
+
+    ID = 211
+    n0 = calc_density(ID)
+    pavg0 = calc_pavg(ID)
+
+    with axes(
+            'Distribution functions',
+            'Pion distribution functions `f(p)` for different bulk pressures. '
+            'Colored histograms are samples, solid lines are `f_0 + \delta f` '
+            '(which goes negative for large momentum and bulk pressure), '
+            'and dashed lines are the actual target distributions with '
+            'rescaled momentum, `f_0(\lambda p)`.'
+    ) as ax:
+        nbins = 50
+        w = nbins*(2*np.pi*hbarc)**3/(2*volume*4*np.pi)
+
+        for k, Pi_frac in enumerate([0, -.1, -.3]):
+            Pi = Pi_frac*P0
+            parts = frzout.sample(
+                frzout.Surface(x, sigma, v, Pi=np.array([Pi])),
+                hrg
+            )
+            psq = (parts[np.abs(parts['ID']) == ID]['p'][:, 1:]**2).sum(axis=1)
+            pmag = np.sqrt(psq)
+            scale = 10**(-k)
+            ax.hist(
+                pmag, bins=nbins, weights=w*scale/psq/pmag.ptp(),
+                histtype='step', log=True,
+                label='$\Pi = ' + (
+                    '0' if Pi_frac == 0 and k == 0 else
+                    r'{}P_0\ (f \times 10^{{{:d}}})'.format(Pi_frac, -k)
+                ) + '$'
+            )
+
+            p = np.linspace(0, pmag.max(), 200)
+            ax.plot(p, scale*f(p, ID, Pi), color=default_color)
+
+            n = calc_density(ID, Pi)
+            pavg = calc_pavg(ID, Pi)
+            ax.plot(p, n0/n*scale*f(p*pavg0/pavg, ID), **dashed_line)
+
+        ax.set_xlabel('$p\ \mathrm{[GeV]}$')
+        ax.set_ylabel('$f(p)$')
+        ax.legend()

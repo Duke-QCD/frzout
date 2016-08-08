@@ -33,6 +33,7 @@ DEF TWO_PI = 6.28318530717958648
 cdef struct SurfaceElem:
     FourVector x, sigma, u
     double vmax
+    double Pi
 
 cdef class Surface:
     """
@@ -46,15 +47,19 @@ cdef class Surface:
         double total_volume
         double ymax
         readonly bint boost_invariant
+        int bulk
 
     def __cinit__(
             self,
             double[:, :] x not None,
             double[:, :] sigma not None,
             double[:, :] v not None,
+            double[:] Pi=None,
             double ymax=.5
     ):
         self.n = x.shape[0]
+
+        # TODO more informative error messages below
 
         if x.shape[1] == 4 and sigma.shape[1] == 4 and v.shape[1] == 3:
             self.boost_invariant = 0
@@ -63,12 +68,15 @@ cdef class Surface:
         elif x.shape[1] == 3 and sigma.shape[1] == 3 and v.shape[1] == 2:
             self.boost_invariant = 1
         else:
-            # TODO more informative error message
             raise ValueError('invalid shape')
 
         if sigma.shape[0] != self.n or v.shape[0] != self.n:
-            # TODO more informative error message
             raise ValueError('invalid shape')
+
+        self.bulk = (Pi is not None)
+        if self.bulk:
+            if Pi.size != self.n:
+                raise ValueError('invalid shape')
 
         self.data = <SurfaceElem*> PyMem_Malloc(self.n * sizeof(SurfaceElem))
         if not self.data:
@@ -127,6 +135,8 @@ cdef class Surface:
                 ))
             )
 
+            elem.Pi = Pi[i] if self.bulk else 0
+
     def __dealloc__(self):
         PyMem_Free(self.data)
 
@@ -159,6 +169,9 @@ cdef struct SpeciesInfo:
     double atan_min, atan_max
     # number density [fm^-3]
     double density
+    # change in density and momentum density due to bulk viscosity
+    # see HRG._prepare_bulk()
+    double delta_density_Pi, rel_p_density_Pi
     # scale factors for momentum sampling
     # see init_species() and sample_four_momentum()
     double xscale, Pscale
@@ -189,7 +202,9 @@ cdef void init_species(
     else:
         s.stable   = 1
 
-    s.density = integrate_species(s, T, DENSITY)
+    s.density = integrate_species(s, T, 0, DENSITY)
+    s.delta_density_Pi = 0
+    s.rel_p_density_Pi = 0
 
     cdef:
         double xmaxsq
@@ -444,7 +459,7 @@ cdef double integrate_species(
 
 
 cdef void sample_four_momentum(
-    const SpeciesInfo* s, double T, FourVector* p
+    const SpeciesInfo* s, double T, double bulk_pscale, FourVector* p
 ) nogil:
     """
     Choose a random four-momentum, with mass either constant (for stable
@@ -473,7 +488,8 @@ cdef void sample_four_momentum(
     masses (z ~ 10).
 
     """
-    cdef double m, z, r, x, E_over_T, P
+    # note: lowercase p is momentum, capital P is probability
+    cdef double m, r, pmag, P
 
     while True:
         if s.stable:
@@ -486,25 +502,24 @@ cdef void sample_four_momentum(
 
         # sample proposal x from envelope x^2*exp(-x/xscale)
         r = (1 - rand())*(1 - rand())*(1 - rand())
-        x = -s.xscale*math.log(r)
+        pmag = -T*s.xscale*math.log(r)
 
         # acceptance probability
-        z = m/T
-        E_over_T = math.sqrt(x*x + z*z)
-        P *= s.Pscale / r / (math.exp(E_over_T) + s.sign)
+        P *= s.Pscale / r / (math.exp(math.sqrt(m*m + pmag*pmag)/T) + s.sign)
 
         if rand() < P:
             break
 
+    # apply bulk correction
+    pmag *= bulk_pscale
+
     cdef:
-        # change variables, x = p/T
-        double pmag = x*T
         # sample 3D direction
         double cos_theta = 2*rand() - 1
         double sin_theta = math.sqrt(1 - cos_theta*cos_theta)
         double phi = TWO_PI*rand()
 
-    p.t = T*E_over_T
+    p.t = math.sqrt(m*m + pmag*pmag)
     p.x = pmag*sin_theta*math.cos(phi)
     p.y = pmag*sin_theta*math.sin(phi)
     p.z = pmag*cos_theta
@@ -521,7 +536,9 @@ cdef class HRG:
         size_t n
         readonly double T
         double total_density
+        readonly double delta_density_Pi
         int decay_f500
+        int bulk_prepared
 
     def __cinit__(
             self, double T,
@@ -536,9 +553,10 @@ cdef class HRG:
         if not self.data:
             raise MemoryError()
 
-        self.decay_f500 = (decay_f500 or species == 'urqmd')
-
         self.total_density = 0
+        self.delta_density_Pi = 0
+        self.decay_f500 = (decay_f500 or species == 'urqmd')
+        self.bulk_prepared = 0
 
         cdef:
             size_t i
@@ -555,6 +573,13 @@ cdef class HRG:
 
     def __len__(self):
         return self.n
+
+    def _data(self):
+        """
+        Return a view of the internal species data.  Mainly for testing.
+
+        """
+        return np.asarray(<SpeciesInfo[:self.n]> self.data)
 
     cdef double _sum_integrals(self, IntegralType integral, double cs2=0):
         """
@@ -632,6 +657,49 @@ cdef class HRG:
 
         """
         return self._sum_integrals(ZETA_OVER_TAU, cs2=self.cs2())
+
+    cdef void _prepare_bulk(self):
+        """
+        Prepare for sampling with bulk viscous corrections by pre-calculating
+        the changes in density and momentum density for each species.
+
+        delta_density_Pi is the change in particle density over bulk pressure:
+
+            density  ->  density + delta_density_Pi * Pi
+
+        This is saved for each species and the sum is saved for the HRG.
+
+        rel_p_density_Pi is the relative change in momentum density over bulk
+        pressure:
+
+            p_density  ->  p_density * (1 + rel_p_density_Pi * Pi)
+
+        """
+        cdef:
+            double cs2 = self.cs2()
+            double zeta_over_tau = self._sum_integrals(ZETA_OVER_TAU, cs2=cs2)
+            size_t i
+            SpeciesInfo* s
+
+        self.delta_density_Pi = 0
+
+        for i in range(self.n):
+            s = self.data + i
+
+            s.delta_density_Pi = (
+                integrate_species(s, self.T, cs2, DELTA_DENSITY) /
+                zeta_over_tau
+            )
+
+            self.delta_density_Pi += s.delta_density_Pi
+
+            s.rel_p_density_Pi = (
+                integrate_species(s, self.T, cs2, DELTA_MOMENTUM_DENSITY) /
+                zeta_over_tau /
+                integrate_species(s, self.T, cs2, MOMENTUM_DENSITY)
+            )
+
+        self.bulk_prepared = 1
 
 
 # represents a sampled particle
@@ -859,6 +927,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         double y, y_minus_eta_s
         double eta_s, cosh_eta_s, sinh_eta_s
         double pt_prime
+        double bulk_pscale
         size_t ielem, ispecies
         SurfaceElem* elem
         SpeciesInfo* species
@@ -869,19 +938,31 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
     for ielem in range(surface.n):
         elem = surface.data + ielem
 
-        new_N = N + elem.vmax*hrg.total_density
+        new_N = N + elem.vmax * (
+            hrg.total_density +
+            hrg.delta_density_Pi * elem.Pi
+        )
         if new_N < 0:
             N = new_N
             continue
 
         for ispecies in range(hrg.n):
             species = hrg.data + ispecies
-            N += elem.vmax*species.density
+            N += elem.vmax * (
+                species.density +
+                species.delta_density_Pi * elem.Pi
+            )
+
+            bulk_pscale = (
+                (1 + elem.Pi * species.rel_p_density_Pi) /
+                (1 + elem.Pi * species.delta_density_Pi / species.density)
+            )
+
             while N > 0:
                 # adding a negative number
                 N += math.log(1 - rand())
 
-                sample_four_momentum(species, hrg.T, &p)
+                sample_four_momentum(species, hrg.T, bulk_pscale, &p)
                 fourvec.boost_inverse(&p, &elem.u)
 
                 p_dot_sigma = fourvec.dot(&p, &elem.sigma)
@@ -926,6 +1007,9 @@ def sample(Surface surface not None, HRG hrg not None):
 
     """
     particles = ParticleArray(surface.total_volume * hrg.total_density)
+
+    if surface.bulk and not hrg.bulk_prepared:
+        hrg._prepare_bulk()
 
     with nogil:
         _sample(surface, hrg, particles)
