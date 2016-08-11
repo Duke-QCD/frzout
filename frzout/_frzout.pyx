@@ -30,9 +30,13 @@ seed_rand()
 DEF TWO_PI = 6.28318530717958648
 
 
+cdef struct ShearTensor:
+    double xx, yy, zz, xy, xz, yz
+
 cdef struct SurfaceElem:
     FourVector x, sigma, u
     double vmax
+    ShearTensor pi
     double Pi
 
 cdef class Surface:
@@ -47,13 +51,14 @@ cdef class Surface:
         double total_volume
         double ymax
         readonly bint boost_invariant
-        int bulk
+        int shear, bulk
 
     def __cinit__(
             self,
             double[:, :] x not None,
             double[:, :] sigma not None,
             double[:, :] v not None,
+            object pi=None,
             double[:] Pi=None,
             double ymax=.5
     ):
@@ -72,6 +77,27 @@ cdef class Surface:
 
         if sigma.shape[0] != self.n or v.shape[0] != self.n:
             raise ValueError('invalid shape')
+
+        cdef double[:] pixx, piyy, pixy, pixz, piyz
+
+        self.shear = (pi is not None)
+        if self.shear:
+            pixx = pi['xx']
+            piyy = pi['yy']
+            pixy = pi['xy']
+            if not (pixx.size == piyy.size == pixy.size == self.n):
+                raise ValueError('invalid shape')
+            if self.boost_invariant:
+                if 'xz' in pi or 'yz' in pi:
+                    warnings.warn(
+                        '(xz, yz) components of pi '
+                        'have no effect for 2D surfaces'
+                    )
+            else:
+                pixz = pi['xz']
+                piyz = pi['yz']
+                if not (pixz.size == piyz.size == self.n):
+                    raise ValueError('invalid shape')
 
         self.bulk = (Pi is not None)
         if self.bulk:
@@ -135,6 +161,25 @@ cdef class Surface:
                 ))
             )
 
+            if self.shear:
+                elem.pi.xx = pixx[i]
+                elem.pi.yy = piyy[i]
+                elem.pi.xy = pixy[i]
+                if self.boost_invariant:
+                    elem.pi.xz = 0
+                    elem.pi.yz = 0
+                else:
+                    elem.pi.xz = pixz[i]
+                    elem.pi.yz = piyz[i]
+                boost_pi_lrf(&elem.pi, &elem.u)
+            else:
+                elem.pi.xx = 0
+                elem.pi.yy = 0
+                elem.pi.zz = 0
+                elem.pi.xy = 0
+                elem.pi.xz = 0
+                elem.pi.yz = 0
+
             elem.Pi = Pi[i] if self.bulk else 0
 
     def __dealloc__(self):
@@ -150,6 +195,87 @@ cdef class Surface:
         """
         def __get__(self):
             return self.total_volume
+
+
+cdef void boost_pi_lrf(ShearTensor* pi, const FourVector* u) nogil:
+    """
+    Boost shear tensor `pi` with flow velocity `u` to its local rest frame.
+    `pi` must have its (xx, yy, xy, xz, yz) components set; the remaining
+    components are determined because pi must is traceless and orthogonal to
+    the flow velocity.
+
+    """
+    cdef:
+        double pi_array[4][4]
+        double L[4][4]
+
+    # Construct the full pi array from the given components.
+    # pi is traceless
+    #
+    #   \pi^\mu_\mu = 0
+    #
+    # and orthogonal to the flow velocity
+    #
+    #   \pi^{\mu\nu} u_\mu = 0
+    #
+    # These five equations may be solved for components (tt, tx, ty, tz, zz) in
+    # terms of the five given components and the flow velocity.
+    pi_array[0][0] = (
+        u.x*u.x*pi.xx + u.y*u.y*pi.yy - u.z*u.z*(pi.xx + pi.yy)
+        + 2*u.x*u.y*pi.xy + 2*u.x*u.z*pi.xz + 2*u.y*u.z*pi.yz
+    )/(u.t*u.t - u.z*u.z)
+
+    pi.zz = pi_array[0][0] - pi.xx - pi.yy
+
+    pi_array[1][1] = pi.xx
+    pi_array[2][2] = pi.yy
+    pi_array[3][3] = pi.zz
+
+    pi_array[0][1] = pi_array[1][0] = (u.x*pi.xx + u.y*pi.xy + u.z*pi.xz)/u.t
+    pi_array[0][2] = pi_array[2][0] = (u.x*pi.xy + u.y*pi.yy + u.z*pi.yz)/u.t
+    pi_array[0][3] = pi_array[3][0] = (u.x*pi.xz + u.y*pi.yz + u.z*pi.zz)/u.t
+    pi_array[1][2] = pi_array[2][1] = pi.xy
+    pi_array[1][3] = pi_array[3][1] = pi.xz
+    pi_array[2][3] = pi_array[3][2] = pi.yz
+
+    # now construct boost matrix from flow velocity
+    L[0][0] = u.t
+    L[1][1] = 1 + u.x*u.x/(1 + u.t)
+    L[2][2] = 1 + u.y*u.y/(1 + u.t)
+    L[3][3] = 1 + u.z*u.z/(1 + u.t)
+
+    L[0][1] = L[1][0] = -u.x
+    L[0][2] = L[2][0] = -u.y
+    L[0][3] = L[3][0] = -u.z
+    L[1][2] = L[2][1] = u.x*u.y/(1 + u.t)
+    L[1][3] = L[3][1] = u.x*u.z/(1 + u.t)
+    L[2][3] = L[3][2] = u.y*u.z/(1 + u.t)
+
+    # calculate boosted pi elements
+    pi.xx = boost_tensor_elem(pi_array, L, 1, 1)
+    pi.yy = boost_tensor_elem(pi_array, L, 2, 2)
+    pi.zz = -pi.xx - pi.yy  # traceless
+    pi.xy = boost_tensor_elem(pi_array, L, 1, 2)
+    pi.xz = boost_tensor_elem(pi_array, L, 1, 3)
+    pi.yz = boost_tensor_elem(pi_array, L, 2, 3)
+
+
+cdef double boost_tensor_elem(
+    const double[4][4] A, const double[4][4] L, int a, int b
+) nogil:
+    """
+    Compute the (a, b) element of tensor A after boosting by L.
+
+    """
+    cdef:
+        double total = 0
+        int c, d
+
+    for c in range(4):
+        for d in range(4):
+            total += L[a][c] * L[b][d] * A[c][d]
+
+    return total
 
 
 cdef struct SpeciesInfo:
@@ -459,7 +585,9 @@ cdef double integrate_species(
 
 
 cdef void sample_four_momentum(
-    const SpeciesInfo* s, double T, double bulk_pscale, FourVector* p
+    const SpeciesInfo* s, double T,
+    double shear_pscale, const ShearTensor* pi, double bulk_pscale,
+    FourVector* p
 ) nogil:
     """
     Choose a random four-momentum, with mass either constant (for stable
@@ -510,19 +638,21 @@ cdef void sample_four_momentum(
         if rand() < P:
             break
 
-    # apply bulk correction
-    pmag *= bulk_pscale
-
     cdef:
         # sample 3D direction
-        double cos_theta = 2*rand() - 1
-        double sin_theta = math.sqrt(1 - cos_theta*cos_theta)
+        double rz = 2*rand() - 1  # cos(theta)
+        double sin_theta = math.sqrt(1 - rz*rz)
         double phi = TWO_PI*rand()
+        double rx = sin_theta*math.cos(phi)
+        double ry = sin_theta*math.sin(phi)
 
-    p.t = math.sqrt(m*m + pmag*pmag)
-    p.x = pmag*sin_theta*math.cos(phi)
-    p.y = pmag*sin_theta*math.sin(phi)
-    p.z = pmag*cos_theta
+    # compute 3D momentum vector with viscous corrections
+    p.x = pmag*(bulk_pscale*rx + shear_pscale*(rx*pi.xx + ry*pi.xy + rz*pi.xz))
+    p.y = pmag*(bulk_pscale*ry + shear_pscale*(rx*pi.xy + ry*pi.yy + rz*pi.yz))
+    p.z = pmag*(bulk_pscale*rz + shear_pscale*(rx*pi.xz + ry*pi.yz + rz*pi.zz))
+
+    # compute energy
+    p.t = math.sqrt(m*m + p.x*p.x + p.y*p.y + p.z*p.z)
 
 
 cdef class HRG:
@@ -536,9 +666,10 @@ cdef class HRG:
         size_t n
         readonly double T
         double total_density
-        readonly double delta_density_Pi
+        double delta_density_Pi
+        double shear_pscale
         int decay_f500
-        int bulk_prepared
+        int shear_prepared, bulk_prepared
 
     def __cinit__(
             self, double T,
@@ -555,7 +686,9 @@ cdef class HRG:
 
         self.total_density = 0
         self.delta_density_Pi = 0
+        self.shear_pscale = 0
         self.decay_f500 = (decay_f500 or species == 'urqmd')
+        self.shear_prepared = 0
         self.bulk_prepared = 0
 
         cdef:
@@ -657,6 +790,19 @@ cdef class HRG:
 
         """
         return self._sum_integrals(ZETA_OVER_TAU, cs2=self.cs2())
+
+    cdef void _prepare_shear(self):
+        """
+        Prepare for sampling with shear viscous corrections by precalculating
+        the shear momentum scale factor = tau/(2*eta).  Shear corrections are
+        then applied by transforming sampled momentum vectors p_i by
+
+            p_i  ->  p_i + shear_pscale * pi_ij p_j
+
+        with both p_i and the shear tensor pi_ij in the local rest frame.
+
+        """
+        self.shear_pscale = .5/self.eta_over_tau()
 
     cdef void _prepare_bulk(self):
         """
@@ -962,7 +1108,11 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
                 # adding a negative number
                 N += math.log(1 - rand())
 
-                sample_four_momentum(species, hrg.T, bulk_pscale, &p)
+                sample_four_momentum(
+                    species, hrg.T,
+                    hrg.shear_pscale, &elem.pi, bulk_pscale,
+                    &p
+                )
                 fourvec.boost_inverse(&p, &elem.u)
 
                 p_dot_sigma = fourvec.dot(&p, &elem.sigma)
@@ -1007,6 +1157,9 @@ def sample(Surface surface not None, HRG hrg not None):
 
     """
     particles = ParticleArray(surface.total_volume * hrg.total_density)
+
+    if surface.shear and not hrg.shear_prepared:
+        hrg._prepare_shear()
 
     if surface.bulk and not hrg.bulk_prepared:
         hrg._prepare_bulk()

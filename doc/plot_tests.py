@@ -141,6 +141,7 @@ plt.rcParams.update({
     'legend.numpoints': 1,
     'legend.scatterpoints': 1,
     'legend.frameon': False,
+    'image.interpolation': 'none',
 })
 
 
@@ -458,6 +459,75 @@ def equation_of_state(axes):
         ax.legend(loc='upper left')
 
 
+def sample_Tuv(surface, hrg):
+    """
+    Sample particles and compute the stress-energy tensor.
+
+    """
+    p = frzout.sample(surface, hrg)['p']
+    return np.dot(p.T/p[:, 0], p) / surface.volume
+
+
+def make_pi_dict(**kwargs):
+    """
+    Make a dict of pi components suitable for passing to Surface.
+
+    """
+    return {
+        i: np.array([kwargs.get(i, 0.)])
+        for i in ['xx', 'yy', 'xy', 'xz', 'yz']
+    }
+
+
+@section
+def shear_viscous_corrections(axes):
+    r"""
+    Verification that the desired shear tensor `\pi^{\mu\nu}` is reproduced.
+    This test case checks that nonzero `\pi^{xy}` is reproduced without
+    changing the equilibrium pressure or energy density.  The algorithm starts
+    to break down at very large shear pressure.
+
+    The "shear and bulk" section below has additional checks.
+
+    """
+    hrg = frzout.HRG(.15, res_width=False)
+
+    P0 = hrg.pressure()
+    e0 = hrg.energy_density()
+
+    x = np.array([[1., 0, 0, 0]])
+    sigma = np.array([[1e6/hrg.density(), 0, 0, 0]])
+    v = np.zeros((1, 3))
+
+    pi_frac = np.linspace(-.5, .5, 11)
+
+    Tuv = np.array([
+        sample_Tuv(
+            frzout.Surface(x, sigma, v, pi=make_pi_dict(xy=i*P0)),
+            hrg
+        ) for i in pi_frac
+    ]).T
+
+    P = Tuv.diagonal()[:, 1:].sum(axis=1)/3
+
+    with axes() as ax:
+        ax.plot(pi_frac, Tuv[1, 2]/P0, label='$\pi_{xy}$')
+        ax.plot(pi_frac, pi_frac, **dashed_line)
+
+        ax.plot(pi_frac, Tuv[1, 3]/P0, label='$\pi_{xz}$')
+        ax.plot(pi_frac, P/P0 - 1, label='Pressure')
+        ax.plot(pi_frac, Tuv[0, 0]/e0 - 1, label='Energy density')
+        ax.axhline(0, **dashed_line)
+
+        ax.set_xlim(pi_frac.min(), pi_frac.max())
+        ax.set_ylim(pi_frac.min(), pi_frac.max())
+
+        ax.set_xlabel('$\pi_{xy}/P_0$')
+        ax.set_ylabel(
+            '$\pi_{ij}/P_0,\ \Delta P/P_0,\ \Delta\epsilon/\epsilon_0$')
+        ax.legend(loc='upper left')
+
+
 @section
 def bulk_viscous_corrections(axes):
     """
@@ -524,7 +594,7 @@ def bulk_viscous_corrections(axes):
         ax.set_ylim(Pi_frac.min(), Pi_frac.max())
 
         ax.set_xlabel('$\Pi/P_0$')
-        ax.set_ylabel('$\Delta P/P_0,\; \Delta\epsilon/\epsilon_0$')
+        ax.set_ylabel('$\Delta P/P_0,\ \Delta\epsilon/\epsilon_0$')
         ax.legend(loc='upper left')
 
     density, pavg = id_parts_samples.T
@@ -626,3 +696,175 @@ def bulk_viscous_corrections(axes):
         ax.set_xlabel('$p\ \mathrm{[GeV]}$')
         ax.set_ylabel('$f(p)$')
         ax.legend()
+
+
+@section
+def shear_and_bulk(axes):
+    """
+    Shear tensor with `\pi^{xx} = -\pi^{yy}` and all other components zero, and
+    bulk pressure fixed at `\Pi = -0.1P_0`.  This is a very difficult test case
+    but the algorithm remains accurate for small to moderate viscous pressure.
+
+    """
+    hrg = frzout.HRG(.15, res_width=False)
+
+    P0 = hrg.pressure()
+    e0 = hrg.energy_density()
+
+    x = np.array([[1., 0, 0, 0]])
+    sigma = np.array([[1e6/hrg.density(), 0, 0, 0]])
+    v = np.zeros((1, 3))
+
+    pi_frac = np.linspace(-.5, .5, 11)
+    Pi_frac = -.1
+
+    Tuv = np.array([
+        sample_Tuv(
+            frzout.Surface(
+                x, sigma, v,
+                pi=make_pi_dict(xx=i*P0, yy=-i*P0),
+                Pi=np.array([Pi_frac*P0])
+            ),
+            hrg
+        ) for i in pi_frac
+    ]).T
+
+    P = Tuv.diagonal()[:, 1:].sum(axis=1)/3
+
+    with axes() as ax:
+        ax.plot(pi_frac, (Tuv[1, 1] - P)/P0, label='$\pi_{xx}$')
+        ax.plot(pi_frac, pi_frac, **dashed_line)
+
+        ax.plot(pi_frac, (Tuv[2, 2] - P)/P0, label='$\pi_{yy}$')
+        ax.plot(pi_frac, -pi_frac, **dashed_line)
+
+        ax.plot(pi_frac, P/P0 - 1, label='Pressure')
+        ax.axhline(Pi_frac, **dashed_line)
+
+        ax.plot(pi_frac, Tuv[0, 0]/e0 - 1, label='Energy density')
+        ax.axhline(0, **dashed_line)
+
+        ax.set_xlim(pi_frac.min(), pi_frac.max())
+        ax.set_ylim(pi_frac.min(), pi_frac.max())
+
+        ax.set_xlabel('$\pi_{xx}/P_0,\ -\pi_{yy}/P_0$')
+        ax.set_ylabel(
+            '$\pi_{ij}/P_0,\ \Delta P/P_0,\ \Delta\epsilon/\epsilon_0$')
+        ax.legend(loc='upper center')
+
+
+def minus_sign(s):
+    return s.replace('-', '\u2212')
+
+
+@section
+def stress_energy_tensor(axes):
+    r"""
+    Verification that the sampling algorithm reproduces the complete
+    stress-energy tensor `T^{\mu\nu}` from hydrodynamics, including any viscous
+    corrections.
+
+    For each of the following, the flow velocity and viscous pressures are
+    chosen randomly, particles are sampled, and the effective stress-energy
+    tensor is computed by summing over the sampled particles.  The sampled
+    tensor is then compared to the expectation from hydro.
+
+    In the heatmap cells, the first number is sampled value for the given
+    component of the tensor and the second number (in parentheses) is the
+    expected value from hydro.  Cells are color-coded, where grey indicates
+    perfect agreement, red indicates that the sampled value is large, and blue
+    too small.  Some disagreement is expected due to statistical fluctuations
+    from finite numbers of particles.
+
+    Before each heatmap, the randomly chosen velocity and viscous pressures are
+    listed.  The overall magnitude of shear pressure is quantified by the
+    Lorentz scalar "pirel" = `\sqrt{\pi^{\mu\nu}\pi_{\mu\nu}/(e^2 + 3P_0^2)}`.
+
+    """
+    hrg = frzout.HRG(.15, res_width=False)
+
+    P0 = hrg.pressure()
+    e0 = hrg.energy_density()
+
+    for _ in range(3):
+        vmag = np.random.rand()
+        cos_theta = np.random.uniform(-1, 1)
+        sin_theta = np.sqrt(1 - cos_theta**2)
+        phi = np.random.uniform(0, 2*np.pi)
+        vx = vmag * sin_theta * np.cos(phi)
+        vy = vmag * sin_theta * np.sin(phi)
+        vz = vmag * cos_theta
+
+        pixx, piyy, pixy, pixz, piyz = np.random.uniform(-.2, .2, 5)*P0
+        Pi = np.random.uniform(-.2, .1)*P0
+
+        surface = frzout.Surface(
+            np.array([[1., 0, 0, 0]]),
+            np.array([[2e6/hrg.density(), 0, 0, 0]]),
+            np.array([[vx, vy, vz]]),
+            pi={
+                k[2:]: np.array([v])
+                for k, v in locals().items()
+                if k.startswith('pi')
+            },
+            Pi=np.array([Pi])
+        )
+
+        u = np.array([1, vx, vy, vz]) / np.sqrt(1 - vmag*vmag)
+
+        pitt = (
+            vx*vx*pixx + vy*vy*piyy - vz*vz*(pixx + piyy)
+            + 2*vx*vy*pixy + 2*vx*vz*pixz + 2*vy*vz*piyz
+        ) / (1 - vz*vz)
+        pizz = pitt - pixx - piyy
+
+        pitx = vx*pixx + vy*pixy + vz*pixz
+        pity = vx*pixy + vy*piyy + vz*piyz
+        pitz = vx*pixz + vy*piyz + vz*pizz
+
+        piuv = np.array([
+            [pitt, pitx, pity, pitz],
+            [pitx, pixx, pixy, pixz],
+            [pity, pixy, piyy, piyz],
+            [pitz, pixz, piyz, pizz],
+        ])
+
+        uu = np.outer(u, u)
+        g = np.array([1, -1, -1, -1], dtype=float)
+        Delta = np.diag(g) - uu
+        Tuv_check = e0*uu - (P0 + Pi)*Delta + piuv
+
+        Tuv = u[0]*sample_Tuv(surface, hrg)
+
+        Tmag = np.sqrt(e0*e0 + 3*P0*P0)
+        pimag = np.sqrt(np.einsum('uv,uv,u,v', piuv, piuv, g, g))
+
+        diff = (Tuv - Tuv_check)/np.maximum(np.abs(Tuv_check), .1*Tmag)
+        tol = .05
+
+        fmt = '{:.3f}'
+
+        with axes(caption=minus_sign(', '.join([
+                'v = (' + ', '.join(3*[fmt]).format(vx, vy, vz) + ')',
+                'pirel = ' + fmt.format(pimag/Tmag),
+                'Pi/P0 = ' + fmt.format(Pi/P0),
+        ]))) as ax:
+            ax.figure.set_size_inches(4.2, 4.2)
+            ax.imshow(diff, cmap=plt.cm.coolwarm, vmin=-tol, vmax=tol)
+            for i, j in np.ndindex(*Tuv.shape):
+                ax.text(
+                    i, j,
+                    minus_sign('\n'.join(
+                        f.format(x[i, j]) for f, x in [
+                            ('{:.4f}', Tuv),
+                            ('({:.4f})', Tuv_check),
+                        ]
+                    )),
+                    ha='center', va='center',
+                    fontsize=.75*font_size
+                )
+            ax.grid(False)
+            ax.xaxis.tick_top()
+            for i in ['x', 'y']:
+                getattr(ax, 'set_{}ticks'.format(i))(range(4))
+                getattr(ax, 'set_{}ticklabels'.format(i))(['t', 'x', 'y', 'z'])
