@@ -1156,7 +1156,7 @@ def sample(Surface surface not None, HRG hrg not None):
         - 'p' momentum four-vector
 
     """
-    particles = ParticleArray(surface.total_volume * hrg.total_density)
+    particles = ParticleArray(abs(surface.total_volume) * hrg.total_density)
 
     if surface.shear and not hrg.shear_prepared:
         hrg._prepare_shear()
