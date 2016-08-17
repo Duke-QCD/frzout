@@ -162,7 +162,7 @@ def stationary_box(axes):
     This is a rudimentary test case with easily-calculated observables.
 
     """
-    volume = 3000.
+    volume = 1500.
     tau = 1.
     T = .15
     ymax = np.random.uniform(.5, .8)
@@ -185,7 +185,7 @@ def stationary_box(axes):
 
     sampler = frzout.Sampler(x, sigma, v, T, ymax=ymax)
 
-    nsamples = 1000
+    nsamples = 10000
     samples = list(sampler.iter_samples(nsamples))
     parts = np.concatenate(samples).view(np.recarray)
 
@@ -199,12 +199,16 @@ def stationary_box(axes):
     ) as ax:
         for (i, label), N in zip(id_parts, yields):
             dist = stats.poisson(N)
-            x = np.arange(*dist.ppf([.001, .999]).astype(int))
+            x = np.arange(*dist.ppf([.0001, .9999]).astype(int))
             ax.plot(x, dist.pmf(x), color=default_color)
-            ax.hist([np.count_nonzero(s.ID == i) for s in samples],
-                    bins=20, normed=True, histtype='step',
-                    label=label.replace(r'\pm', '+').replace(r' \bar p', ''))
+            N = np.array([np.count_nonzero(s.ID == i) for s in samples])
+            ax.hist(
+                N, bins=(np.arange(N.min(), N.max() + 2) - .5),
+                normed=True, histtype='step',
+                label=label.replace(r'\pm', '+').replace(r' \bar p', '')
+            )
 
+        ax.set_xlim(xmin=0)
         ax.set_xlabel('Number of particles')
         ax.set_ylabel('Probability')
         ax.set_yticklabels([])
@@ -216,10 +220,12 @@ def stationary_box(axes):
     )) as ax:
         N = np.array([s.size for s in samples])
         dist = stats.poisson(sampler.navg)
-        x = np.arange(*dist.ppf([.001, .999]).astype(int))
+        x = np.arange(*dist.ppf([.0001, .9999]).astype(int))
         ax.plot(x, dist.pmf(x), color=default_color)
-        ax.hist(N, bins=30, normed=True,
-                histtype='step', color=color_cycle[-1])
+        ax.hist(
+            N, bins=(np.arange(N.min(), N.max() + 3, 2) - .5),
+            normed=True, histtype='step', color=color_cycle[-1]
+        )
         ax.set_xlabel('Number of particles')
         ax.set_ylabel('Probability')
         ax.set_yticklabels([])
@@ -254,9 +260,10 @@ def stationary_box(axes):
         ax.yaxis.get_major_locator().base(100)
         ax.legend()
 
+    nbins = 100
+
     with axes('Rapidity', '`dN/dy` should be flat:') as ax:
         y = .5*np.log((E + pz)/(E - pz))
-        nbins = 50
         for (i, label), N in zip(id_parts, yields):
             ax.plot([-ymax, ymax], [2*N]*2, color=default_color)
             y_ = y[abs_ID == i]
@@ -269,7 +276,6 @@ def stationary_box(axes):
 
     with axes('Azimuthal angle', '`dN/d\phi` should be flat:') as ax:
         phi = np.arctan2(py, px)
-        nbins = 50
         for (i, label), N in zip(id_parts, yields):
             ax.plot([-np.pi, np.pi], [2*N]*2, color=default_color)
             phi_ = phi[abs_ID == i]
@@ -286,10 +292,13 @@ def stationary_box(axes):
 @section
 def moving_box(axes):
     """
-    A single 3D volume element with nonzero flow velocity (but still zero
-    normal vector to avoid negative contributions).  Histograms of sampled (x,
-    y, z) momenta are compared to distributions computed by numerically
-    integrating the distribution functions.
+    A single 3D volume element with randomly chosen flow velocity and normal
+    vector (this randomness means the volume element is not necessarily
+    realistic for a heavy-ion collision, but it is still numerically valid).
+
+    Histograms of sampled (x, y, z) momenta are compared to distributions
+    computed by numerically integrating the Cooper-Frye function.  Negative
+    contributions are ignored.
 
     """
     T = .15
@@ -309,48 +318,71 @@ def moving_box(axes):
 
         volume = 1e6/hrg.density()
         sigma = np.array([[volume, 0, 0, 0]])
+        sigma = np.atleast_2d(np.random.uniform(-.5*volume, 1.5*volume, 4))
         surface = frzout.Surface(x, sigma, v)
 
-        parts = frzout.sample(surface, hrg)
+        def make_parts():
+            n = 0
+            for _ in range(10):
+                parts = frzout.sample(surface, hrg)
+                yield parts
+                n += parts.size
+                if n > 1e6:
+                    break
+
+        parts = list(make_parts())
+        nsamples = len(parts)
+        parts = np.concatenate(parts)
         psamples = parts['p'].T[1:]
 
         # 3D lattice of momentum points
-        P = [np.linspace(1.05*p.min(), 1.05*p.max(), 100) for p in psamples]
+        P = [np.linspace(p.min() - .5, p.max() + .5, 101) for p in psamples]
         Px, Py, Pz = np.meshgrid(*P, indexing='ij')
         dp = [p.ptp()/(p.size - 1) for p in P]
 
-        # evaluate distribution function on lattice
+        # evaluate Cooper-Frye function on lattice
         E = np.sqrt(m*m + Px*Px + Py*Py + Pz*Pz)
-        f = 1/(np.exp((E*gamma - Px*ux - Py*uy - Pz*uz)/T) + sign)
-        f *= 2*g/(2*np.pi*hbarc)**3
+        st, sx, sy, sz = sigma.ravel()
+        dN = (
+            (E*st - Px*sx - Py*sy - Pz*sz)/E /
+            (np.exp((E*gamma - Px*ux - Py*uy - Pz*uz)/T) + sign)
+        )
+        dN *= 2*g/(2*np.pi*hbarc)**3
+        # ignore negative contributions
+        dN.clip(min=0, out=dN)
 
         with axes(name.replace('$', '`') + ' momentum') as ax:
             ax.set_yscale('log')
 
             ax.annotate(
-                '\n'.join([
-                    '$v_{} = {:+.4f}$'.format(*i)
-                    for i in zip(['x', 'y', 'z'], v.flat)
+                ''.join([
+                    '$\sigma^\mu = (',
+                    ', '.join('{:.3f}'.format(i/volume) for i in sigma.flat),
+                    ')$\n',
+                    '$v = (',
+                    ', '.join('{:.3f}'.format(i) for i in v.flat),
+                    ')$',
                 ]),
-                (.04, .95), xycoords='axes fraction', ha='left', va='top'
+                (.03, .96), xycoords='axes fraction', ha='left', va='top'
             )
 
             nbins = 50
             for i, (p, c) in enumerate(zip(psamples, ['x', 'y', 'z'])):
                 ax.hist(
                     p, bins=nbins,
-                    weights=np.full_like(p, nbins/p.ptp()/volume),
+                    weights=np.full_like(p, nbins/p.ptp()/nsamples),
                     histtype='step', label='$p_{}$'.format(c)
                 )
                 j, k = set(range(3)) - {i}
-                # evaluate f along axis i by integrating out axes (j, k)
+                # evaluate dN/dp_i by integrating out axes (j, k)
                 ax.plot(
-                    P[i], dp[j] * dp[k] * f.sum(axis=(j, k)),
+                    P[i], dp[j] * dp[k] * dN.sum(axis=(j, k)),
                     color=default_color
                 )
 
             ax.set_xlabel('$p\ [\mathrm{GeV}]$')
             ax.set_ylabel('$dN/dp\ [\mathrm{GeV}^{-1}]$')
+            ax.yaxis.get_major_locator().base(100)
             ax.legend()
 
 
