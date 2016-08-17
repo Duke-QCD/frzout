@@ -3,6 +3,7 @@
 import glob
 import inspect
 import os
+import pickle
 from contextlib import contextmanager
 
 import numpy as np
@@ -868,3 +869,249 @@ def stress_energy_tensor(axes):
             for i in ['x', 'y']:
                 getattr(ax, 'set_{}ticks'.format(i))(range(4))
                 getattr(ax, 'set_{}ticklabels'.format(i))(['t', 'x', 'y', 'z'])
+
+
+def _realistic_surface_observables():
+    """
+    Compute observables for the "realistic surface" test case.
+
+    """
+    with open('test_surface.dat', 'rb') as f:
+        surface_data = np.array(
+            [l.split() for l in f if not l.startswith(b'#')],
+            dtype=float
+        )
+
+    # 0    1  2  3         4         5         6    7
+    # tau  x  y  dsigma_t  dsigma_x  dsigma_y  v_x  v_y
+    # 8     9     10    11    12    13    14    15
+    # pitt  pitx  pity  pixx  pixy  piyy  pizz  Pi
+    x, sigma, v, _ = np.hsplit(surface_data, [3, 6, 8])
+    pixx, pixy, piyy = surface_data.T[11:14]
+    Pi = surface_data.T[15]
+
+    sigma_ = np.zeros((sigma.shape[0], 4))
+    sigma_[:, :3] = sigma
+    sigma_[:, 1:] *= -1
+    sigma_ *= x[:, :1]
+
+    u_ = np.zeros((v.shape[0], 4))
+    u_[:, 0] = 1
+    u_[:, 1:3] = -v
+    u_ /= np.sqrt(1 - np.square(v).sum(axis=1))[:, np.newaxis]
+
+    vx, vy = v.T
+    pi_uv = np.zeros((pixx.shape[0], 4, 4))
+    pi_uv[:, 0, 0] = vx*vx*pixx + vy*vy*piyy + 2*vx*vy*pixy
+    pi_uv[:, 1, 1] = pixx
+    pi_uv[:, 2, 2] = piyy
+    pi_uv[:, 3, 3] = pi_uv[:, 0, 0] - pixx - piyy
+    pi_uv[:, 0, 1] = pi_uv[:, 1, 0] = -(vx*pixx + vy*pixy)
+    pi_uv[:, 0, 2] = pi_uv[:, 2, 0] = -(vx*pixy + vy*piyy)
+    pi_uv[:, 1, 2] = pi_uv[:, 2, 1] = pixy
+
+    pT_max = 4
+    pT_bins = np.linspace(0, pT_max, 41)
+    pT = (pT_bins[:-1] + pT_bins[1:])/2
+    delta_pT = pT_max/(pT_bins.size - 1)
+
+    phi = np.linspace(0, 2*np.pi, 100, endpoint=False)
+
+    eta, eta_weights = special.ps_roots(30)
+    eta_max = 4
+    eta *= eta_max
+    eta_weights *= 2*eta_max
+
+    T = .145
+    hrg = frzout.HRG(T, res_width=False)
+    eta_over_tau = hrg.eta_over_tau()
+    zeta_over_tau = hrg.zeta_over_tau()
+    cs2 = hrg.cs2()
+
+    the_vn = [2, 3, 4]
+
+    def calc_obs(ID):
+        m = frzout.species_dict[ID]['mass']
+        degen = frzout.species_dict[ID]['degen']
+        sign = -1 if frzout.species_dict[ID]['boson'] else 1
+
+        pT_, phi_, eta_ = np.meshgrid(pT, phi, eta)
+        mT_ = np.sqrt(m*m + pT_*pT_)
+        p = np.array([
+            mT_*np.cosh(eta_),
+            pT_*np.cos(phi_),
+            pT_*np.sin(phi_),
+            mT_*np.sinh(eta_)
+        ]).T
+
+        # ignore negative contributions
+        psigma = np.inner(p, sigma_)
+        psigma.clip(min=0, out=psigma)
+
+        pu = np.inner(p, u_)
+        with np.errstate(over='ignore'):
+            f = 1/(np.exp(pu/T) + sign)
+
+        df = f*(1 - sign*f) * (
+            ((pu*pu - m*m)/(3*pu) - cs2*pu)/(zeta_over_tau*T)*Pi +
+            np.einsum('ijku,ijkv,auv->ijka', p, p, pi_uv)/(2*pu*T*eta_over_tau)
+        )
+        f += df
+
+        # (phi, pT) distribution
+        phi_pT_dist = (
+            2*degen *
+            np.einsum('i,ijka,ijka->jk', eta_weights, psigma, f) /
+            (2*np.pi*hbarc)**3 / phi.size
+        )
+        pT_dist = phi_pT_dist.sum(axis=1)
+
+        # navg, pT dist, qn(pT)
+        return (
+            2*np.pi*delta_pT * np.inner(pT, pT_dist),
+            pT_dist,
+            [np.inner(np.exp(1j*n*phi), phi_pT_dist)/pT_dist for n in the_vn]
+        )
+
+    obs_calc = [calc_obs(i) for i, _ in id_parts]
+
+    surface = frzout.Surface(
+        x, sigma, v,
+        pi=dict(xx=pixx, yy=piyy, xy=pixy),
+        Pi=Pi
+    )
+
+    ngroups = 1000
+    N = 1000  # nsamples per group
+    nsamples = ngroups*N
+
+    # need many samples for diff flow
+    # too many to store all particles in memory -> accumulate observables
+    obs_sampled = [(
+        np.empty(nsamples, dtype=int),  # ID particle counts
+        np.zeros_like(pT),  # pT distribution
+        np.zeros((len(the_vn), pT.size)),  # diff flow
+    ) for _ in id_parts]
+
+    diff_flow_counts = [np.zeros_like(vn, dtype=int)
+                        for (_, _, vn) in obs_sampled]
+
+    from multiprocessing.pool import ThreadPool
+
+    for k in range(ngroups):
+        print('      group', k)
+        # threading increases performance since sample() releases the GIL
+        with ThreadPool() as pool:
+            parts = pool.map(lambda _: frzout.sample(surface, hrg), range(N))
+        # identified particle counts
+        for (i, _), (counts, _, _) in zip(id_parts, obs_sampled):
+            counts[k*N:(k+1)*N] = [
+                np.count_nonzero(np.abs(p['ID']) == i) for p in parts
+            ]
+        # merge all samples
+        parts = np.concatenate(parts)
+        abs_ID = np.abs(parts['ID'])
+        for (i, _), (_, pT_dist, vn_arr), dflow_counts, (_, _, qn_list) in zip(
+                id_parts, obs_sampled, diff_flow_counts, obs_calc
+        ):
+            parts_ = parts[abs_ID == i]
+            px, py = parts_['p'].T[1:3]
+            pT_ = np.sqrt(px*px + py*py)
+            phi_ = np.arctan2(py, px)
+            # pT distribution
+            pT_dist += np.histogram(pT_, bins=pT_bins, weights=1/pT_)[0]
+            # differential flow
+            for n, vn, dfc, qn in zip(the_vn, vn_arr, dflow_counts, qn_list):
+                cosnphi = [
+                    np.cos(n*phi_[np.fabs(pT_ - p) < .2] - npsi)
+                    for (p, npsi) in zip(pT, np.arctan2(qn.imag, qn.real))
+                ]
+                vn += [c.sum() for c in cosnphi]
+                dfc += [c.size for c in cosnphi]
+
+    # normalize pT dists and diff flow
+    for (_, pT_dist, vn), dflow_counts in zip(obs_sampled, diff_flow_counts):
+        pT_dist /= 2*np.pi*nsamples*delta_pT
+        vn /= dflow_counts
+
+    return pT, the_vn, obs_calc, obs_sampled
+
+
+@section
+def realistic_surface(axes):
+    """
+    An event-by-event boost-invariant surface, calculated from a TRENTO Pb+Pb
+    initial condition (mid centrality, b ~ 8 fm) and evolved through hydro with
+    shear and bulk viscosities.  The hypersurface is evaluated on a very coarse
+    grid (in the interest of speed), but is otherwise realistic.
+
+    Standard observables are computed from the sampler (colored lines) and by
+    integrating the surface (grey dashed lines).  Negative contributions are
+    neglected in both cases.
+
+    """
+    try:
+        with open('test_surface_observables.pkl', 'rb') as f:
+            obs = pickle.load(f)
+    except FileNotFoundError:
+        obs = _realistic_surface_observables()
+        with open('test_surface_observables.pkl', 'wb') as f:
+            pickle.dump(obs, f, pickle.HIGHEST_PROTOCOL)
+
+    pT, the_vn, obs_calc, obs_sampled = obs
+
+    with axes(
+            'Multiplicity distributions',
+            'Particle production is Poissonian with mean '
+            'given by the fully integrated surface.'
+    ) as ax:
+        for (i, label), (navg, _, _), (counts, _, _) in zip(
+                id_parts, obs_calc, obs_sampled
+        ):
+            dist = stats.poisson(navg)
+            x = np.arange(*dist.ppf([.0001, .9999]).astype(int))
+            ax.hist(
+                counts, bins=(np.arange(counts.min(), counts.max() + 2) - .5),
+                normed=True, histtype='step', label=label
+            )
+            ax.plot(x, dist.pmf(x), **dashed_line)
+
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Probability')
+        ax.set_yticklabels([])
+        ax.legend()
+
+    with axes('Transverse momentum distributions') as ax:
+        ax.set_yscale('log')
+        for (i, label), (_, pT_dist_calc, _), (_, pT_dist_sampled, _) in zip(
+                id_parts, obs_calc, obs_sampled
+        ):
+            ax.plot(pT, pT_dist_sampled, label=label)
+            ax.plot(pT, pT_dist_calc, **dashed_line)
+
+        ax.set_xlabel('$p_T\ [\mathrm{GeV}]$')
+        ax.set_ylabel('$1/2\pi p_T \: dN/dp_T\,dy\ [\mathrm{GeV}^{-2}]$')
+        ax.legend()
+
+    iflow = np.searchsorted(pT, 3, side='right')
+
+    for k, n in enumerate(the_vn):
+        args = (
+            'Flow',
+            'Calculating differential flow from the sampler requires huge '
+            'quantities of particles and even then remains somewhat noisy '
+            'at very small and large momentum.  It also tends to look "flat" '
+            'due to binning effects.'
+        ) if k == 0 else ()
+        with axes(*args) as ax:
+            for (i, label), (_, _, qn_calc), (_, _, vn_sampled) in zip(
+                    id_parts, obs_calc, obs_sampled
+            ):
+                ax.plot(pT[:iflow], vn_sampled[k][:iflow], label=label)
+                ax.plot(pT[:iflow], np.abs(qn_calc[k][:iflow]), **dashed_line)
+
+            ax.set_ylim(ymin=0)
+            ax.set_xlabel('$p_T\ \mathrm{[GeV]}$')
+            ax.set_ylabel('$v_{}(p_T)$'.format(n))
+            ax.set_title('$v_{}$'.format(n), fontsize=1.2*font_size)
+            ax.legend(loc='upper left')
