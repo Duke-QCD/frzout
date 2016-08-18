@@ -747,14 +747,14 @@ cdef class HRG:
 
     cpdef double energy_density(self):
         """
-        Energy density [GeV/fm^-3].
+        Energy density [GeV/fm^3].
 
         """
         return self._sum_integrals(ENERGY_DENSITY)
 
     cpdef double pressure(self):
         """
-        Pressure [GeV/fm^-3].
+        Pressure [GeV/fm^3].
 
         """
         return self._sum_integrals(PRESSURE)
@@ -782,14 +782,14 @@ cdef class HRG:
 
     cpdef double eta_over_tau(self):
         """
-        Shear viscosity over relaxation time [GeV/fm^-3].
+        Shear viscosity over relaxation time [GeV/fm^3].
 
         """
         return self._sum_integrals(ETA_OVER_TAU)
 
     cpdef double zeta_over_tau(self):
         """
-        Bulk viscosity over relaxation time [GeV/fm^-3].
+        Bulk viscosity over relaxation time [GeV/fm^3].
 
         """
         return self._sum_integrals(ZETA_OVER_TAU, cs2=self.cs2())
