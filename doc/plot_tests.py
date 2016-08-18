@@ -574,9 +574,10 @@ def bulk_viscous_corrections(axes):
     values vs. the relative bulk pressure `\Pi/P_0`.  Colored lines are from
     samples and dashed lines are calculated.
 
-    The algorithm starts to break down at very large bulk pressure, however in
-    realistic events the bulk pressure is mostly small and negative, roughly
-    `-0.2P_0 < \Pi < 0`.
+    The algorithm restricts bulk pressure to a range (roughly -0.5 to +0.2 of
+    the ideal pressure, depending on the hadron gas temperature and
+    composition) so that no particle densities ever go negative.  In realistic
+    events the bulk pressure is easily within this range.
 
     """
     T = .15
@@ -605,11 +606,12 @@ def bulk_viscous_corrections(axes):
     P0 = hrg.pressure()
     e0 = hrg.energy_density()
 
-    Pi_frac = np.linspace(-.5, .5, 21)
+    Pi_frac = np.linspace(-.6, .3, 21)
     Pi = Pi_frac * P0
+    Pi_min, Pi_max = hrg.Pi_lim()
 
     e, P, id_parts_samples = (
-        np.array(i) for i in zip(*[sample_bulk(x*P0) for x in Pi_frac])
+        np.array(i) for i in zip(*[sample_bulk(x) for x in Pi])
     )
 
     with axes(
@@ -618,7 +620,7 @@ def bulk_viscous_corrections(axes):
             'the energy density.'
     ) as ax:
         ax.plot(Pi_frac, P/P0 - 1, label='Pressure')
-        ax.plot(Pi_frac, Pi_frac, **dashed_line)
+        ax.plot(Pi_frac, Pi_frac.clip(Pi_min/P0, Pi_max/P0), **dashed_line)
 
         ax.plot(Pi_frac, e/e0 - 1, label='Energy density')
         ax.axhline(0, **dashed_line)
@@ -636,6 +638,7 @@ def bulk_viscous_corrections(axes):
     cs2 = hrg.cs2()
 
     def f(p, ID, Pi=0):
+        Pi = min(max(Pi, Pi_min), Pi_max)
         m, boson, g = (
             frzout.species_dict[ID][k] for k in ['mass', 'boson', 'degen']
         )
@@ -671,7 +674,7 @@ def bulk_viscous_corrections(axes):
 
         ax.set_xlabel('$\Pi/P_0$')
         ax.set_ylabel('$\Delta n/n_0$')
-        ax.legend(loc='upper left')
+        ax.legend(loc='lower right')
 
     with axes('Average momenta') as ax:
         for p, (i, label) in zip(pavg, id_parts):

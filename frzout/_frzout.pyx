@@ -668,6 +668,7 @@ cdef class HRG:
         double total_density
         double delta_density_Pi
         double shear_pscale
+        double Pi_min, Pi_max
         int decay_f500
         int shear_prepared, bulk_prepared
 
@@ -687,6 +688,8 @@ cdef class HRG:
         self.total_density = 0
         self.delta_density_Pi = 0
         self.shear_pscale = 0
+        self.Pi_min = 0
+        self.Pi_max = 0
         self.decay_f500 = (decay_f500 or species == 'urqmd')
         self.shear_prepared = 0
         self.bulk_prepared = 0
@@ -807,7 +810,8 @@ cdef class HRG:
     cdef void _prepare_bulk(self):
         """
         Prepare for sampling with bulk viscous corrections by pre-calculating
-        the changes in density and momentum density for each species.
+        the changes in density and momentum density for each species as well as
+        the allowed range for bulk pressure.
 
         delta_density_Pi is the change in particle density over bulk pressure:
 
@@ -824,6 +828,7 @@ cdef class HRG:
         cdef:
             double cs2 = self.cs2()
             double zeta_over_tau = self._sum_integrals(ZETA_OVER_TAU, cs2=cs2)
+            double rel_min = 0, rel_max = 0
             size_t i
             SpeciesInfo* s
 
@@ -845,7 +850,31 @@ cdef class HRG:
                 integrate_species(s, self.T, cs2, MOMENTUM_DENSITY)
             )
 
+            rel_min = math.fmin(
+                rel_min,
+                math.fmin(s.delta_density_Pi/s.density, s.rel_p_density_Pi)
+            )
+            rel_max = math.fmax(
+                rel_max,
+                math.fmax(s.delta_density_Pi/s.density, s.rel_p_density_Pi)
+            )
+
+        # Set Pi min and max so that no species' density or momentum density
+        # ever goes negative.  In fact, give them 10% leeway.
+        self.Pi_min = -.9/rel_max
+        self.Pi_max = -.9/rel_min
+
         self.bulk_prepared = 1
+
+    def Pi_lim(self):
+        """
+        Minimum and maximum allowable bulk pressure [GeV/fm^3].
+
+        """
+        if not self.bulk_prepared:
+            self._prepare_bulk()
+
+        return self.Pi_min, self.Pi_max
 
 
 # represents a sampled particle
@@ -1073,6 +1102,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         double y, y_minus_eta_s
         double eta_s, cosh_eta_s, sinh_eta_s
         double pt_prime
+        double Pi
         double bulk_pscale
         size_t ielem, ispecies
         SurfaceElem* elem
@@ -1084,24 +1114,21 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
     for ielem in range(surface.n):
         elem = surface.data + ielem
 
-        new_N = N + elem.vmax * (
-            hrg.total_density +
-            hrg.delta_density_Pi * elem.Pi
-        )
+        # clip bulk pressure to allowed range
+        Pi = math.fmin(math.fmax(elem.Pi, hrg.Pi_min), hrg.Pi_max)
+
+        new_N = N + elem.vmax * (hrg.total_density + hrg.delta_density_Pi * Pi)
         if new_N < 0:
             N = new_N
             continue
 
         for ispecies in range(hrg.n):
             species = hrg.data + ispecies
-            N += elem.vmax * (
-                species.density +
-                species.delta_density_Pi * elem.Pi
-            )
+            N += elem.vmax * (species.density + species.delta_density_Pi * Pi)
 
             bulk_pscale = (
-                (1 + elem.Pi * species.rel_p_density_Pi) /
-                (1 + elem.Pi * species.delta_density_Pi / species.density)
+                (1 + Pi * species.rel_p_density_Pi) /
+                (1 + Pi * species.delta_density_Pi / species.density)
             )
 
             while N > 0:
