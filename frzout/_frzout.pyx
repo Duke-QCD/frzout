@@ -85,7 +85,7 @@ cdef class Surface:
             pixx = pi['xx']
             piyy = pi['yy']
             pixy = pi['xy']
-            if not (pixx.size == piyy.size == pixy.size == self.n):
+            if not (pixx.shape[0] == piyy.shape[0] == pixy.shape[0] == self.n):
                 raise ValueError('invalid shape')
             if self.boost_invariant:
                 if 'xz' in pi or 'yz' in pi:
@@ -96,12 +96,12 @@ cdef class Surface:
             else:
                 pixz = pi['xz']
                 piyz = pi['yz']
-                if not (pixz.size == piyz.size == self.n):
+                if not (pixz.shape[0] == piyz.shape[0] == self.n):
                     raise ValueError('invalid shape')
 
         self.bulk = (Pi is not None)
         if self.bulk:
-            if Pi.size != self.n:
+            if Pi.shape[0] != self.n:
                 raise ValueError('invalid shape')
 
         self.data = <SurfaceElem*> PyMem_Malloc(self.n * sizeof(SurfaceElem))
