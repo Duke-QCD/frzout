@@ -47,7 +47,7 @@ cdef class Surface:
     """
     cdef:
         SurfaceElem* data
-        size_t n
+        Py_ssize_t n
         double total_volume
         double ymax
         readonly bint boost_invariant
@@ -109,7 +109,7 @@ cdef class Surface:
             raise MemoryError()
 
         cdef:
-            size_t i
+            Py_ssize_t i
             SurfaceElem* elem
             double gamma, vx, vy, vz, volume, sigma_scale
 
@@ -663,7 +663,7 @@ cdef class HRG:
     """
     cdef:
         SpeciesInfo* data
-        size_t n
+        Py_ssize_t n
         readonly double T
         double total_density
         double delta_density_Pi
@@ -695,7 +695,7 @@ cdef class HRG:
         self.bulk_prepared = 0
 
         cdef:
-            size_t i
+            Py_ssize_t i
             int ID
             dict info
 
@@ -725,7 +725,7 @@ cdef class HRG:
         """
         cdef:
             double total, last
-            size_t i
+            Py_ssize_t i
 
         with nogil:
             total = last = integrate_species(self.data, self.T, cs2, integral)
@@ -829,7 +829,7 @@ cdef class HRG:
             double cs2 = self.cs2()
             double zeta_over_tau = self._sum_integrals(ZETA_OVER_TAU, cs2=cs2)
             double rel_min = 0, rel_max = 0
-            size_t i
+            Py_ssize_t i
             SpeciesInfo* s
 
         self.delta_density_Pi = 0
@@ -942,8 +942,8 @@ cdef inline void increase_capacity(ParticleArray particles) with gil:
     cdef:
         # Again, resize based on the Poisson distribution:
         # add (roughly) another standard deviation to the capacity.
-        size_t new_capacity = (
-            particles.capacity + <size_t>(math.sqrt(particles.capacity))
+        Py_ssize_t new_capacity = (
+            particles.capacity + <Py_ssize_t>(math.sqrt(particles.capacity))
         )
         Particle* new_data = <Particle*> PyMem_Realloc(
             particles.data, new_capacity * sizeof(Particle)
@@ -995,9 +995,9 @@ cdef void decay_f500(ParticleArray particles) nogil:
 
     cdef:
         # loop index
-        size_t i
+        Py_ssize_t i
         # original number of particles (will increase as pions are produced)
-        size_t nparts = particles.n
+        Py_ssize_t nparts = particles.n
         # parent and daughter particles mass and momentum
         double M, P, m, p
         # spherical angles
@@ -1104,7 +1104,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         double pt_prime
         double Pi
         double bulk_pscale
-        size_t ielem, ispecies
+        Py_ssize_t ielem, ispecies
         SurfaceElem* elem
         SpeciesInfo* species
         FourVector x, p
