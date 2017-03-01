@@ -806,6 +806,7 @@ cdef class HRG:
 
         """
         self.shear_pscale = .5/self.eta_over_tau()
+        self.shear_prepared = 1
 
     cdef void _prepare_bulk(self):
         """
