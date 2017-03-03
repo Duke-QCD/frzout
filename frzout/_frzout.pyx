@@ -328,7 +328,7 @@ cdef void init_species(
     else:
         s.stable   = 1
 
-    s.density = integrate_species(s, T, 0, DENSITY)
+    s.density = integrate_species(density, s, T)
     s.delta_density_Pi = 0
     s.rel_p_density_Pi = 0
 
@@ -448,28 +448,32 @@ cdef double integrate_bw(const SpeciesInfo* s) nogil:
     return dm * total
 
 
-cdef enum IntegralType:
-    DENSITY
-    MOMENTUM_DENSITY
-    ENERGY_DENSITY
-    PRESSURE
-    CS2_NUMER
-    CS2_DENOM
-    ETA_OVER_TAU
-    ZETA_OVER_TAU
-    DELTA_DENSITY
-    DELTA_MOMENTUM_DENSITY
+# thermodynamic quantities computed from momentum-space integrals
+cdef enum Quantity:
+    density
+    mass_density
+    momentum_density
+    energy_density
+    pressure
+    cs2_numer
+    cs2_denom
+    eta_over_tau
+    zeta_over_tau
 
-cdef double integrate_species_stable(
-    double m, int sign, double T, double cs2, IntegralType integral
+
+cdef double _integrate_momentum(
+    Quantity quantity, double m, int sign,
+    double T, double pscale, double cs2
 ) nogil:
     """
-    Integrate over momentum, for stable species with zero mass width:
+    Do not call directly -- use integrate_species().
+
+    Integrates over momentum:
 
         \int d^3p g(p) f(p)
 
     where f(p) is the distribution function (Bose-Einstein or Fermi-Dirac) and
-    g(p) depends on the quantity to compute (energy density, pressure, etc).
+    g(p) depends on the thermodynamic quantity.
 
     Some of these integrals may be written as infinite sums of Bessel functions
     and therefore computed by a truncated series.  That works fine, but while
@@ -486,64 +490,60 @@ cdef double integrate_species_stable(
     """
     cdef:
         double total = 0
-        double p, psq
-        double E, Esq
-        double f0, g
+        double m2 = m**2
+        double pscale2 = pscale**2
+        double p, p2
+        double f, g
         size_t i
 
     for i in range(NQUADPTS_P):
         # x = p/T from quadrature table
         p = quadpts_p[i].x * T
-        psq = p*p
-        Esq = m*m + psq
-        E = math.sqrt(Esq)
-        f0 = 1 / (math.exp(E/T) + sign)
+        p2 = p**2
+        f = 1 / (math.exp(math.sqrt(m2 + p2/pscale2)/T) + sign)
 
         # compute inner function
-        if integral == DENSITY:
+        if quantity == density:
             g = 1
-        elif integral == MOMENTUM_DENSITY:
+        elif quantity == mass_density:
+            g = m
+        elif quantity == momentum_density:
             g = p
-        elif integral == ENERGY_DENSITY:
-            g = E
-        elif integral == PRESSURE:
-            g = psq/(3*E)
-        # remaining integrals have f0*(1 -/+ f0)
-        elif integral == CS2_NUMER:
-            g = psq/3 * (1 - sign*f0)
-        elif integral == CS2_DENOM:
-            g = Esq * (1 - sign*f0)
-        elif integral == ETA_OVER_TAU:
-            g = psq*psq/Esq / (15*T) * (1 - sign*f0)
-        elif integral == ZETA_OVER_TAU:
-            g = m*m / (3*T) * (cs2 - psq/(3*Esq)) * (1 - sign*f0)
-        # These are proportional to the change in density and momentum density
-        # due to the bulk delta-f.  They must be multiplied by Pi/(zeta/tau).
-        elif integral == DELTA_DENSITY:
-            g = (psq/(3*E) - cs2*E)/T * (1 - sign*f0)
-        elif integral == DELTA_MOMENTUM_DENSITY:
-            g = (psq/(3*E) - cs2*E)/T * (1 - sign*f0) * p
+        elif quantity == energy_density:
+            g = math.sqrt(m2 + p2)
+        elif quantity == pressure:
+            g = p2/(3*math.sqrt(m2 + p2))
+        elif quantity == cs2_numer:
+            g = p2/3 * (1 - sign*f)
+        elif quantity == cs2_denom:
+            g = (m2 + p2) * (1 - sign*f)
+        elif quantity == eta_over_tau:
+            g = p2**2/(m2 + p2) / (15*T) * (1 - sign*f)
+        elif quantity == zeta_over_tau:
+            g = m2 / (3*T) * (cs2 - p2/(3*(m2 + p2))) * (1 - sign*f)
         else:
             return 0
 
-        total += quadpts_p[i].w * g * f0
+        total += quadpts_p[i].w * g * f
 
     # Multiply by T^3 to account for the change of variables d^3p -> d^3x.
     # The quadrature weights already include all other prefactors.
     return T*T*T * total
 
 
-cdef double integrate_species_unstable(
-    const SpeciesInfo* s, double T, double cs2, IntegralType integral
+cdef double _integrate_mass_momentum(
+    Quantity q, const SpeciesInfo* s,
+    double T, double pscale, double cs2
 ) nogil:
     """
-    Integrate over mass and momentum, for unstable resonances with finite mass
-    width:
+    Do not call directly -- use integrate_species().
+
+    Integrates over mass and momentum:
 
         \int_{m_min}^{m_max} dm bw(m) \int d^3p g(m, p) f(m, p)
 
     where (m_min, m_max) are the mass thresholds for the given species and the
-    inner momentum integral is integrate_species_stable().
+    inner integral is _integrate_momentum().
 
     """
     cdef:
@@ -557,29 +557,34 @@ cdef double integrate_species_unstable(
         m2 = s.m_min + dm*(1 - quadpts_m[i].x)
 
         total += quadpts_m[i].w * (
-            bw_dist(s, m1)*integrate_species_stable(m1, s.sign, T, cs2, integral) +
-            bw_dist(s, m2)*integrate_species_stable(m2, s.sign, T, cs2, integral)
+            bw_dist(s, m1)*_integrate_momentum(q, m1, s.sign, T, pscale, cs2) +
+            bw_dist(s, m2)*_integrate_momentum(q, m2, s.sign, T, pscale, cs2)
         )
 
     return s.bw_norm * dm * total
 
 
 cdef double integrate_species(
-    const SpeciesInfo* s, double T, double cs2, IntegralType integral
+    Quantity quantity, const SpeciesInfo* s,
+    double T, double pscale=1, double cs2=0
 ) nogil:
     """
-    Compute a phase-space integral for the given species and temperature.
+    Compute a thermodynamic quantity for the given species and temperature by
+    integrating over momentum (and possibly mass, for unstable species).
 
-    The speed of sound squared `cs2` is required for anything related to bulk
-    viscosity, otherwise it is not used.
+    The momentum scale factor `pscale` parametrizes the system's deviation from
+    thermal equilibrium.  It is used for bulk viscous corrections.
+
+    The speed of sound squared `cs2` is required for (zeta/tau), otherwise it
+    is not used.
 
     """
     cdef double I
 
     if s.stable:
-        I = integrate_species_stable(s.m0, s.sign, T, cs2, integral)
+        I = _integrate_momentum(quantity, s.m0, s.sign, T, pscale, cs2)
     else:
-        I = integrate_species_unstable(s, T, cs2, integral)
+        I = _integrate_mass_momentum(quantity, s, T, pscale, cs2)
 
     return s.degen * I
 
@@ -717,22 +722,27 @@ cdef class HRG:
         """
         return np.asarray(<SpeciesInfo[:self.n]> self.data)
 
-    cdef double _sum_integrals(self, IntegralType integral, double cs2=0):
+    cdef double _sum_integrals(self, Quantity quantity, double pscale=1):
         """
         Compute the sum of the given phase-space integral over all the species
         in this HRG.
 
         """
         cdef:
+            double cs2 = self.cs2() if quantity == zeta_over_tau else 0
             double total, last
             Py_ssize_t i
 
         with nogil:
-            total = last = integrate_species(self.data, self.T, cs2, integral)
+            total = last = integrate_species(
+                quantity, self.data, self.T, pscale, cs2
+            )
             for i in range(1, self.n):
                 # reuse previous calculation if possible
                 if not equiv_species(self.data + i, self.data + i - 1):
-                    last = integrate_species(self.data + i, self.T, cs2, integral)
+                    last = integrate_species(
+                        quantity, self.data + i, self.T, pscale, cs2
+                    )
                 total += last
 
         return total
@@ -742,7 +752,7 @@ cdef class HRG:
         Particle density [fm^-3].
 
         """
-        # return self._sum_integrals(DENSITY)
+        # return self._sum_integrals(density)
         return self.total_density
 
     cpdef double energy_density(self):
@@ -750,14 +760,14 @@ cdef class HRG:
         Energy density [GeV/fm^3].
 
         """
-        return self._sum_integrals(ENERGY_DENSITY)
+        return self._sum_integrals(energy_density)
 
     cpdef double pressure(self):
         """
         Pressure [GeV/fm^3].
 
         """
-        return self._sum_integrals(PRESSURE)
+        return self._sum_integrals(pressure)
 
     def entropy_density(self):
         """
@@ -771,32 +781,32 @@ cdef class HRG:
         Average magnitude of momentum [GeV].
 
         """
-        return self._sum_integrals(MOMENTUM_DENSITY) / self.total_density
+        return self._sum_integrals(momentum_density) / self.total_density
 
     cpdef double cs2(self):
         """
         Speed of sound squared.
 
         """
-        return self._sum_integrals(CS2_NUMER) / self._sum_integrals(CS2_DENOM)
+        return self._sum_integrals(cs2_numer) / self._sum_integrals(cs2_denom)
 
     cpdef double eta_over_tau(self):
         """
         Shear viscosity over relaxation time [GeV/fm^3].
 
         """
-        return self._sum_integrals(ETA_OVER_TAU)
+        return self._sum_integrals(eta_over_tau)
 
     cpdef double zeta_over_tau(self):
         """
         Bulk viscosity over relaxation time [GeV/fm^3].
 
         """
-        return self._sum_integrals(ZETA_OVER_TAU, cs2=self.cs2())
+        return self._sum_integrals(zeta_over_tau)
 
     cdef void _prepare_shear(self):
         """
-        Prepare for sampling with shear viscous corrections by precalculating
+        Prepare for sampling with shear viscous corrections by pre-calculating
         the shear momentum scale factor = tau/(2*eta).  Shear corrections are
         then applied by transforming sampled momentum vectors p_i by
 
@@ -826,6 +836,7 @@ cdef class HRG:
             p_density  ->  p_density * (1 + rel_p_density_Pi * Pi)
 
         """
+        '''
         cdef:
             double cs2 = self.cs2()
             double zeta_over_tau = self._sum_integrals(ZETA_OVER_TAU, cs2=cs2)
@@ -864,6 +875,7 @@ cdef class HRG:
         # ever goes negative.  In fact, give them 10% leeway.
         self.Pi_min = -.9/rel_max
         self.Pi_max = -.9/rel_min
+        '''
 
         self.bulk_prepared = 1
 
