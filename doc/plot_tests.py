@@ -253,6 +253,7 @@ def stationary_box(axes):
                 label=r'{} $({{\times}}10^{{{:d}}})$'.format(label, -2*k)
             )
 
+        ax.set_xlim(pT_plot[0], pT_plot[-1])
         ax.set_xlabel('$p_T\ [\mathrm{GeV}]$')
         ax.set_ylabel('$1/2\pi p_T \: dN/dp_T\,dy\ [\mathrm{GeV}^{-2}]$')
         ax.yaxis.get_major_locator().base(100)
@@ -566,138 +567,119 @@ def bulk_viscous_corrections(axes):
     distributions.
 
     The total pressure is the sum of the equilibrium and bulk pressures:
-    `P = P_0 + \Pi`.
+    `P = P_0 + \Pi`.  In order to satisfy continuity of the stress-energy
+    tensor, sampled particles must reproduce the total pressure without
+    changing the equilibrium energy density; this is achieved by parametrically
+    rescaling overall particle production and momentum depending on the bulk
+    pressure.  This works for negative bulk pressure all the way down to zero
+    total pressure, but for positive bulk pressure, the necessary momentum
+    scale factor diverges as the total pressure approaches twice the
+    equilibrium pressure.  The momentum scale is therefore restricted to
+    reasonable maximum (3) which effectively limits the positive bulk pressure
+    to around 70% of the equilibrium pressure, depending on the hadron gas
+    temperature and composition.
 
     Most quantities are plotted as the relative change to their equilibrium
     values vs. the relative bulk pressure `\Pi/P_0`.  Colored lines are from
     samples and dashed lines are calculated.
 
-    The algorithm restricts bulk pressure to a range (roughly -0.5 to +0.2 of
-    the ideal pressure, depending on the hadron gas temperature and
-    composition) so that no particle densities ever go negative.  In realistic
-    events the bulk pressure is easily within this range.
-
     """
     T = .15
     hrg = frzout.HRG(T, res_width=False)
 
-    volume = 2e6/hrg.density()
+    volume = 1e6/hrg.density()
     x = np.array([[1., 0, 0, 0]])
     sigma = np.array([[volume, 0, 0, 0]])
     v = np.zeros((1, 3))
 
     def sample_bulk(Pi):
-        surface = frzout.Surface(x, sigma, v, Pi=np.array([Pi]))
+        Pi = None if Pi == 0 else np.array([Pi])
+        surface = frzout.Surface(x, sigma, v, Pi=Pi)
         parts = frzout.sample(surface, hrg)
 
         E = parts['p'][:, 0]
         psq = (parts['p'][:, 1:]**2).sum(axis=1)
 
         return (
+            parts.size/volume,
             E.sum()/volume,
             (psq/(3*E)).sum()/volume,
-            [(p.size/volume/2, p.mean()) for p in (
-                np.sqrt(psq[np.abs(parts['ID']) == i]) for (i, _) in id_parts
-            )]
+            np.sqrt(psq).mean()
         )
 
-    P0 = hrg.pressure()
+    n0 = hrg.density()
     e0 = hrg.energy_density()
+    P0 = hrg.pressure()
+    pavg0 = hrg.mean_momentum()
 
-    Pi_frac = np.linspace(-.6, .3, 21)
-    Pi = Pi_frac * P0
+    Pi = np.linspace(-P0, P0, 31)
     Pi_min, Pi_max = hrg.Pi_lim()
+    # ensure that the HRG is sampled at precisely the Pi limits
+    for p in hrg.Pi_lim():
+        Pi[np.abs(Pi - p).argmin()] = p
+    Pi_frac = Pi/P0
 
-    e, P, id_parts_samples = (
-        np.array(i) for i in zip(*[sample_bulk(x) for x in Pi])
-    )
+    n, e, P, pavg = np.array([sample_bulk(x) for x in Pi]).T
 
     with axes(
             'Pressure and energy density',
             'Bulk pressure changes the effective pressure without changing '
             'the energy density.'
     ) as ax:
-        ax.plot(Pi_frac, P/P0 - 1, label='Pressure')
+        ax.plot(Pi_frac, P/P0 - 1, label='Pressure ($P$)')
         ax.plot(Pi_frac, Pi_frac.clip(Pi_min/P0, Pi_max/P0), **dashed_line)
 
-        ax.plot(Pi_frac, e/e0 - 1, label='Energy density')
+        ax.plot(Pi_frac, e/e0 - 1, label='Energy density ($\epsilon$)')
         ax.axhline(0, **dashed_line)
 
         ax.set_xlim(Pi_frac.min(), Pi_frac.max())
         ax.set_ylim(Pi_frac.min(), Pi_frac.max())
 
         ax.set_xlabel('$\Pi/P_0$')
-        ax.set_ylabel('$\Delta P/P_0,\ \Delta\epsilon/\epsilon_0$')
+        ax.set_ylabel('$\Delta P/P_0$, $\Delta\epsilon/\epsilon_0$')
         ax.legend(loc='upper left')
 
-    density, pavg = id_parts_samples.T
+    nscale, pscale = np.array([hrg.bulk_scale_factors(p) for p in Pi]).T
 
-    zeta_over_tau = hrg.zeta_over_tau()
-    cs2 = hrg.cs2()
+    with axes(
+            'Particle density and momentum',
+            'The changes in particle density and mean momentum necessary '
+            'to achieve the target pressure and energy density.'
+    ) as ax:
+        for y, y0, ycheck, label in [
+                (n, n0, nscale, 'Density ($n$)'),
+                (pavg, pavg0, pscale, 'Mean momentum ($p$)'),
+        ]:
+            ax.plot(Pi_frac, y/y0 - 1, label=label)
+            ax.plot(Pi_frac, ycheck - 1, **dashed_line)
 
-    def f(p, ID, Pi=0):
-        Pi = min(max(Pi, Pi_min), Pi_max)
+        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
+
+        ax.set_xlabel('$\Pi/P_0$')
+        ax.set_ylabel(
+            r'$\Delta n/n_0$, $\Delta p/p_0$')
+        ax.legend(loc='upper left')
+
+    def f(p, ID):
         m, boson, g = (
             frzout.species_dict[ID][k] for k in ['mass', 'boson', 'degen']
         )
         s = -1 if boson else 1
-        E = np.sqrt(m*m + p*p)
-        f0 = 1/(np.exp(E/T) + s)
-        df = Pi/(T*zeta_over_tau)*(p*p/(3*E) - cs2*E)*f0*(1 - s*f0)
-        return g*(f0 + df)
+        return g/(np.exp(np.sqrt(m*m + p*p)/T) + s)
 
-    def int_f(ID, Pi=0, inner=lambda p: 1):
+    def density(ID, pscale=1):
         return (4*np.pi)/(2*np.pi*hbarc)**3 * integrate.quad(
-            lambda p: p*p*inner(p)*f(p, ID, Pi), 0, 10
+            lambda p: p*p*f(p/pscale, ID), 0, 10
         )[0]
 
-    def calc_density(ID, Pi=0):
-        return int_f(ID, Pi)
-
-    def calc_pavg(ID, Pi=0):
-        return int_f(ID, Pi, inner=lambda p: p) / calc_density(ID, Pi)
-
-    with axes(
-            'Particle densities',
-            'Changes in density are proportional to bulk pressure '
-            'by construction.'
-    ) as ax:
-        for n, (i, label) in zip(density, id_parts):
-            n0 = calc_density(i)
-            ncalc = np.array([calc_density(i, Pi_) for Pi_ in Pi])
-            ax.plot(Pi_frac, n/n0 - 1, label=label)
-            ax.plot(Pi_frac, ncalc/n0 - 1, **dashed_line)
-
-        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
-
-        ax.set_xlabel('$\Pi/P_0$')
-        ax.set_ylabel('$\Delta n/n_0$')
-        ax.legend(loc='lower right')
-
-    with axes('Average momenta') as ax:
-        for p, (i, label) in zip(pavg, id_parts):
-            p0 = calc_pavg(i)
-            pcalc = np.array([calc_pavg(i, Pi_) for Pi_ in Pi])
-            ax.plot(Pi_frac, p/p0 - 1, label=label)
-            ax.plot(Pi_frac, pcalc/p0 - 1, **dashed_line)
-
-        ax.set_xlim(Pi_frac.min(), Pi_frac.max())
-
-        ax.set_xlabel('$\Pi/P_0$')
-        ax.set_ylabel(r'$\Delta\langle p \rangle/\langle p \rangle_0$')
-        ax.legend(loc='upper left')
-
     ID = 211
-    n0 = calc_density(ID)
-    pavg0 = calc_pavg(ID)
+    n0 = density(ID)
 
     with axes(
             'Distribution functions',
             'Pion distribution functions `f(p)` for different bulk pressures. '
-            'Colored histograms are samples, solid lines are `f_0 + \delta f` '
-            '(which goes negative for large momentum and bulk pressure), '
-            'and dashed lines are the actual target distributions with '
-            'rescaled momentum, `f_0(\lambda p)`.'
+            'Colored histograms are samples; dashed lines are target '
+            'distributions with rescaled momentum, `f(\lambda p)`.'
     ) as ax:
         nbins = 50
         w = nbins*(2*np.pi*hbarc)**3/(2*volume*4*np.pi)
@@ -710,9 +692,9 @@ def bulk_viscous_corrections(axes):
             )
             psq = (parts[np.abs(parts['ID']) == ID]['p'][:, 1:]**2).sum(axis=1)
             pmag = np.sqrt(psq)
-            scale = 10**(-k)
+            offset = 10**(-k)
             ax.hist(
-                pmag, bins=nbins, weights=w*scale/psq/pmag.ptp(),
+                pmag, bins=nbins, weights=w*offset/psq/pmag.ptp(),
                 histtype='step', log=True,
                 label='$\Pi = ' + (
                     '0' if Pi_frac == 0 and k == 0 else
@@ -721,15 +703,14 @@ def bulk_viscous_corrections(axes):
             )
 
             p = np.linspace(0, pmag.max(), 200)
-            ax.plot(p, scale*f(p, ID, Pi), color=default_color)
+            nscale, pscale = hrg.bulk_scale_factors(Pi)
+            n = density(ID, pscale)
+            ax.plot(p, n0/n*nscale*offset*f(p/pscale, ID), **dashed_line)
 
-            n = calc_density(ID, Pi)
-            pavg = calc_pavg(ID, Pi)
-            ax.plot(p, n0/n*scale*f(p*pavg0/pavg, ID), **dashed_line)
-
+        ax.set_xlim(0)
         ax.set_xlabel('$p\ \mathrm{[GeV]}$')
         ax.set_ylabel('$f(p)$')
-        ax.legend()
+        ax.legend(title='Pions only')
 
 
 @section
@@ -830,11 +811,11 @@ def stress_energy_tensor(axes):
         vz = vmag * cos_theta
 
         pixx, piyy, pixy, pixz, piyz = np.random.uniform(-.2, .2, 5)*P0
-        Pi = np.random.uniform(-.2, .1)*P0
+        Pi = np.random.uniform(-.3, .3)*P0
 
         surface = frzout.Surface(
             np.array([[1., 0, 0, 0]]),
-            np.array([[2e6/hrg.density(), 0, 0, 0]]),
+            np.array([[1e7/hrg.density(), 0, 0, 0]]),
             np.array([[vx, vy, vz]]),
             pi={
                 k[2:]: np.array([v])
@@ -884,6 +865,7 @@ def stress_energy_tensor(axes):
                 'Pi/P0 = ' + fmt.format(Pi/P0),
         ]))) as ax:
             ax.figure.set_size_inches(4.2, 4.2)
+            ax.figure.set_dpi(100)
             ax.imshow(diff, cmap=plt.cm.coolwarm, vmin=-tol, vmax=tol)
             for i, j in np.ndindex(*Tuv.shape):
                 ax.text(
