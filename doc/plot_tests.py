@@ -1052,7 +1052,7 @@ def _realistic_surface_observables():
     return pT, the_vn, obs_calc, obs_sampled
 
 
-@section
+# @section
 def realistic_surface(axes):
     """
     An event-by-event boost-invariant surface, calculated from a TRENTO Pb+Pb
