@@ -3,9 +3,11 @@
 import warnings
 
 import numpy as np
+from scipy.interpolate import CubicSpline
 
 from .species import species_dict, _normalize_species
 
+cimport cython
 from libc cimport math
 from cpython.mem cimport PyMem_Malloc, PyMem_Realloc, PyMem_Free
 from cpython.buffer cimport Py_buffer, PyBUF_FORMAT
@@ -295,9 +297,6 @@ cdef struct SpeciesInfo:
     double atan_min, atan_max
     # number density [fm^-3]
     double density
-    # change in density and momentum density due to bulk viscosity
-    # see HRG._prepare_bulk()
-    double delta_density_Pi, rel_p_density_Pi
     # scale factors for momentum sampling
     # see init_species() and sample_four_momentum()
     double xscale, Pscale
@@ -329,8 +328,6 @@ cdef void init_species(
         s.stable   = 1
 
     s.density = integrate_species(density, s, T)
-    s.delta_density_Pi = 0
-    s.rel_p_density_Pi = 0
 
     cdef:
         double xmaxsq
@@ -671,9 +668,9 @@ cdef class HRG:
         Py_ssize_t n
         readonly double T
         double total_density
-        double delta_density_Pi
         double shear_pscale
-        double Pi_min, Pi_max
+        double[::1] bulk_spline_x
+        double[:, :, ::1] bulk_spline_c
         int decay_f500
         int shear_prepared, bulk_prepared
 
@@ -691,10 +688,7 @@ cdef class HRG:
             raise MemoryError()
 
         self.total_density = 0
-        self.delta_density_Pi = 0
         self.shear_pscale = 0
-        self.Pi_min = 0
-        self.Pi_max = 0
         self.decay_f500 = (decay_f500 or species == 'urqmd')
         self.shear_prepared = 0
         self.bulk_prepared = 0
@@ -821,61 +815,82 @@ cdef class HRG:
     cdef void _prepare_bulk(self):
         """
         Prepare for sampling with bulk viscous corrections by pre-calculating
-        the changes in density and momentum density for each species as well as
-        the allowed range for bulk pressure.
-
-        delta_density_Pi is the change in particle density over bulk pressure:
-
-            density  ->  density + delta_density_Pi * Pi
-
-        This is saved for each species and the sum is saved for the HRG.
-
-        rel_p_density_Pi is the relative change in momentum density over bulk
-        pressure:
-
-            p_density  ->  p_density * (1 + rel_p_density_Pi * Pi)
+        an interpolation table of density and momentum scale factors.
 
         """
-        '''
+        # equilibrium quantities
         cdef:
-            double cs2 = self.cs2()
-            double zeta_over_tau = self._sum_integrals(ZETA_OVER_TAU, cs2=cs2)
-            double rel_min = 0, rel_max = 0
+            double n0 = self.total_density
+            double e0 = self.energy_density()
+            double p0 = self.pressure()
+
+        cdef:
+            Py_ssize_t npoints = 20
+            Py_ssize_t i0 = npoints/2
+            # Choose values for the momentum scale factor (pscale).
+            # Use logarithmic steps for pscale > 1 -- this leads to more
+            # evenly-spaced pressures.
+            double[::1] pscale = np.concatenate([
+                np.linspace(0, 1, i0, endpoint=False),
+                np.logspace(0, 1, npoints - i0, base=3)
+            ])
+            # Allocate corresponding arrays for density scale factor (nscale)
+            # and bulk pressure (Pi).
+            double[::1] nscale = np.empty_like(pscale)
+            double[::1] Pi = np.empty_like(pscale)
+
+        cdef:
+            double n, e, p
             Py_ssize_t i
-            SpeciesInfo* s
 
-        self.delta_density_Pi = 0
+        # compute nscale and Pi at each pscale
+        for i in range(npoints):
+            # first entry has pscale == 0 and zero total pressure
+            if i == 0:
+                nscale[i] = e0/self._sum_integrals(mass_density)
+                Pi[i] = -p0
+                continue
 
-        for i in range(self.n):
-            s = self.data + i
+            # equilibrium point
+            if i == i0:
+                nscale[i] = 1
+                Pi[i] = 0
+                continue
 
-            s.delta_density_Pi = (
-                integrate_species(s, self.T, cs2, DELTA_DENSITY) /
-                zeta_over_tau
-            )
+            # compute thermodynamic quantities at this pscale
+            n = self._sum_integrals(density, pscale=pscale[i])
+            e = self._sum_integrals(energy_density, pscale=pscale[i])
+            p = self._sum_integrals(pressure, pscale=pscale[i])
 
-            self.delta_density_Pi += s.delta_density_Pi
+            # Choose nscale so that energy density is preserved:
+            #
+            #            average energy per particle at equilibrium
+            #   nscale = ------------------------------------------
+            #            average energy per particle at this pscale
+            #
+            # e.g. if each particle has half the energy on average, then need
+            # twice as many particles for the same total energy.
+            nscale[i] = (e0/n0) / (e/n)
 
-            s.rel_p_density_Pi = (
-                integrate_species(s, self.T, cs2, DELTA_MOMENTUM_DENSITY) /
-                zeta_over_tau /
-                integrate_species(s, self.T, cs2, MOMENTUM_DENSITY)
-            )
+            # Given the above nscale, the actual effective pressure is
+            #
+            #   peff = (average pressure per particle) * (corrected density)
+            #        = (p/n)                           * (n0*nscale)
+            #        = p*e0/e
+            #
+            # and the bulk pressure is then the deviation from equilibrium.
+            Pi[i] = p*e0/e - p0
 
-            rel_min = math.fmin(
-                rel_min,
-                math.fmin(s.delta_density_Pi/s.density, s.rel_p_density_Pi)
-            )
-            rel_max = math.fmax(
-                rel_max,
-                math.fmax(s.delta_density_Pi/s.density, s.rel_p_density_Pi)
-            )
+        # Fit the scale factors to a cubic spline as a function of Pi.
+        # Use the *square* of pscale to improve the fit at the low end;
+        # this is necessary because the first and second derivatives of
+        # pscale diverge at the endpoint which is impossible for a polynomial
+        # to fit.  However the square is well-behaved.
+        spline = CubicSpline(Pi, [nscale, np.square(pscale)], axis=1)
 
-        # Set Pi min and max so that no species' density or momentum density
-        # ever goes negative.  In fact, give them 10% leeway.
-        self.Pi_min = -.9/rel_max
-        self.Pi_max = -.9/rel_min
-        '''
+        # save spline breakpoints and coefficients
+        self.bulk_spline_x = spline.x
+        self.bulk_spline_c = spline.c
 
         self.bulk_prepared = 1
 
@@ -887,7 +902,94 @@ cdef class HRG:
         if not self.bulk_prepared:
             self._prepare_bulk()
 
-        return self.Pi_min, self.Pi_max
+        with cython.wraparound(True):
+            return self.bulk_spline_x[0], self.bulk_spline_x[-1]
+
+    def bulk_scale_factors(self, double Pi):
+        """
+        Return the density and momentum scale factors (nscale, pscale) at the
+        given bulk pressure Pi.
+
+        """
+        if not self.bulk_prepared:
+            self._prepare_bulk()
+
+        cdef double nscale, pscale
+
+        compute_bulk_scale_factors(
+            self.bulk_spline_x, self.bulk_spline_c, Pi,
+            &nscale, &pscale
+        )
+
+        return nscale, pscale
+
+
+cdef void compute_bulk_scale_factors(
+    double[::1] x, double[:, :, ::1] c, double Pi,
+    double* nscale, double* pscale
+) nogil:
+    """
+    Compute the bulk scale factors (`nscale`, `pscale`) at the given bulk
+    pressure `Pi` by evaluating the interpolating spline with breakpoints `x`
+    and coefficients `c` [as determined in HRG._prepare_bulk()].
+
+    """
+    cdef:
+        double Pimin = x[0], Pimax = x[x.shape[0] - 1]
+        Py_ssize_t i
+
+    # Find the interval i such that x[i] <= Pi < x[i + 1].
+    # First, check that Pi is within the table range.  If not, clip to the
+    # range and use the first or last interval as appropriate.
+    if Pi <= Pimin:
+        Pi = Pimin
+        i = 0
+    elif Pi >= Pimax:
+        Pi = Pimax
+        i = x.shape[0] - 2
+    else:
+        # Guess the interval using a single interpolation search step.  The
+        # breakpoints are roughly evenly spaced to this will be off by at most
+        # one or two steps.
+        i = <Py_ssize_t>((Pi - Pimin)/(Pimax - Pimin) * (x.shape[0] - 1))
+        # Now use linear search to find the precise interval.
+        if x[i] > Pi:
+            while True:
+                i -= 1
+                if x[i] <= Pi:
+                    break
+        else:
+            while Pi >= x[i + 1]:
+                i += 1
+
+    # Evaluate the piecewise polynomial in the determined interval.
+    Pi -= x[i]
+    nscale[0] = eval_poly(c, i, 0, Pi)
+    # Remember to take sqrt since the spline is fit to pscale *squared*!
+    pscale[0] = math.sqrt(eval_poly(c, i, 1, Pi))
+
+
+cdef inline double eval_poly(
+    double[:, :, ::1] c, Py_ssize_t i, Py_ssize_t d, double x
+) nogil:
+    """
+    Evaluate a piecewise polynomial.
+
+    c : PPoly coefficients, shape (degree, nintervals, ndim)
+    i : interval  (c axis 1)
+    d : dimension (c axis 2)
+    x : point to evaluate (relative to interval breakpoint)
+
+    """
+    cdef:
+        double result = 0
+        Py_ssize_t k
+
+    # Horner's method using fused multiply-add: fma(x, y, z) = x*y + z
+    for k in range(c.shape[0]):
+        result = math.fma(result, x, c[k, i, d])
+
+    return result
 
 
 # represents a sampled particle
@@ -1108,6 +1210,10 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
     using thermodynamic quantities (temperature, etc) and species information
     from `hrg`, and write data to `particles`.
 
+    It is *assumed* (not checked) that the HRG has been prepared for shear
+    and/or bulk corrections if the surface requires it.  The wrapper function
+    sample() handles this.
+
     """
     cdef:
         double N, new_N
@@ -1115,8 +1221,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         double y, y_minus_eta_s
         double eta_s, cosh_eta_s, sinh_eta_s
         double pt_prime
-        double Pi
-        double bulk_pscale
+        double bulk_nscale = 1, bulk_pscale = 1
         Py_ssize_t ielem, ispecies
         SurfaceElem* elem
         SpeciesInfo* species
@@ -1127,22 +1232,20 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
     for ielem in range(surface.n):
         elem = surface.data + ielem
 
-        # clip bulk pressure to allowed range
-        Pi = math.fmin(math.fmax(elem.Pi, hrg.Pi_min), hrg.Pi_max)
+        if surface.bulk:
+            compute_bulk_scale_factors(
+                hrg.bulk_spline_x, hrg.bulk_spline_c, elem.Pi,
+                &bulk_nscale, &bulk_pscale
+            )
 
-        new_N = N + elem.vmax * (hrg.total_density + hrg.delta_density_Pi * Pi)
+        new_N = N + elem.vmax * hrg.total_density * bulk_nscale
         if new_N < 0:
             N = new_N
             continue
 
         for ispecies in range(hrg.n):
             species = hrg.data + ispecies
-            N += elem.vmax * (species.density + species.delta_density_Pi * Pi)
-
-            bulk_pscale = (
-                (1 + Pi * species.rel_p_density_Pi) /
-                (1 + Pi * species.delta_density_Pi / species.density)
-            )
+            N += elem.vmax * species.density * bulk_nscale
 
             while N > 0:
                 # adding a negative number
