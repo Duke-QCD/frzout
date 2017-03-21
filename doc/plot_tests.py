@@ -98,10 +98,6 @@ def setup(app):
 
 default_color = '#404040'
 dashed_line = dict(color=default_color, linestyle='dashed')
-color_cycle = [
-    getattr(plt.cm, c)(.8) for c in
-    ['Blues', 'Greens', 'Oranges', 'Purples']
-]
 font_size = 16
 
 plt.rcdefaults()
@@ -109,7 +105,10 @@ plt.rcParams.update({
     'figure.figsize': (10, 6.18),
     'figure.dpi': 200,
     'figure.autolayout': True,
-    'font.family': ['Lato'],
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Lato'],
+    'mathtext.fontset': 'custom',
+    'mathtext.cal': 'sans',
     'font.size': font_size,
     'legend.fontsize': font_size,
     'axes.labelsize': font_size,
@@ -119,7 +118,6 @@ plt.rcParams.update({
     'lines.linewidth': 1.25,
     'lines.markeredgewidth': .1,
     'patch.linewidth': 1.25,
-    'axes.prop_cycle': plt.cycler('color', color_cycle),
     'axes.grid': True,
     'axes.axisbelow': True,
     'axes.facecolor': '#eaeaf2',
@@ -224,7 +222,7 @@ def stationary_box(axes):
         ax.plot(x, dist.pmf(x), color=default_color)
         ax.hist(
             N, bins=(np.arange(N.min(), N.max() + 3, 2) - .5),
-            normed=True, histtype='step', color=color_cycle[-1]
+            normed=True, histtype='step'
         )
         ax.set_xlabel('Number of particles')
         ax.set_ylabel('Probability')
