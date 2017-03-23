@@ -725,18 +725,14 @@ cdef class HRG:
         cdef:
             double cs2 = self.cs2() if quantity == zeta_over_tau else 0
             double total, last
-            Py_ssize_t i
+            SpeciesInfo* s = self.data
 
         with nogil:
-            total = last = integrate_species(
-                quantity, self.data, self.T, pscale, cs2
-            )
-            for i in range(1, self.n):
+            total = last = integrate_species(quantity, s, self.T, pscale, cs2)
+            for s in self.data[1:self.n]:
                 # reuse previous calculation if possible
-                if not equiv_species(self.data + i, self.data + i - 1):
-                    last = integrate_species(
-                        quantity, self.data + i, self.T, pscale, cs2
-                    )
+                if not equiv_species(s, s - 1):
+                    last = integrate_species(quantity, s, self.T, pscale, cs2)
                 total += last
 
         return total
@@ -1109,16 +1105,13 @@ cdef void decay_f500(ParticleArray particles) nogil:
     #   - Freestream each pion by a short time so they don't exactly overlap.
 
     cdef:
-        # loop index
-        Py_ssize_t i
-        # original number of particles (will increase as pions are produced)
-        Py_ssize_t nparts = particles.n
+        # loop variables (see below)
+        Py_ssize_t i, nparts = particles.n
+        Particle* part
         # parent and daughter particles mass and momentum
         double M, P, m, p
         # spherical angles
         double cos_theta, sin_theta, phi
-        # to save some typing
-        Particle* part
         # ID number of second daughter particle
         int ID2
         # four-velocity and position of parent particle
@@ -1126,6 +1119,11 @@ cdef void decay_f500(ParticleArray particles) nogil:
         # four-momentum of daughters in parent's rest frame
         FourVector p_prime
 
+    # Note: the `part` pointer alone _cannot_ be used as an iterator, because
+    # the `particles.data` array may be reallocated when a new particle is
+    # added, which would invalidate the pointer.  Instead, use an integer loop
+    # index and set the `part` pointer relative to `particles.data` on each
+    # iteration.
     for i in range(nparts):
         part = particles.data + i
 
@@ -1222,16 +1220,13 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         double eta_s, cosh_eta_s, sinh_eta_s
         double pt_prime
         double bulk_nscale = 1, bulk_pscale = 1
-        Py_ssize_t ielem, ispecies
         SurfaceElem* elem
         SpeciesInfo* species
         FourVector x, p
 
     N = math.log(1 - rand())
 
-    for ielem in range(surface.n):
-        elem = surface.data + ielem
-
+    for elem in surface.data[:surface.n]:
         if surface.bulk:
             compute_bulk_scale_factors(
                 hrg.bulk_spline_x, hrg.bulk_spline_c, elem.Pi,
@@ -1243,8 +1238,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
             N = new_N
             continue
 
-        for ispecies in range(hrg.n):
-            species = hrg.data + ispecies
+        for species in hrg.data[:hrg.n]:
             N += elem.vmax * species.density * bulk_nscale
 
             while N > 0:
