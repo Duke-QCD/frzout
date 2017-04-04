@@ -4,18 +4,22 @@ from libc cimport math
 
 from .. cimport fourvec
 from ..fourvec cimport FourVector
-from ..random cimport seed_rand, rand
+from .. cimport random
 
 
 def _test_fourvec():
-    seed_rand()
+    cdef random.RNG rng
+    random.init(&rng)
 
     cdef:
-        double vmax = .99/math.sqrt(3)
-        double vx = vmax*(2*rand() - 1)
-        double vy = vmax*(2*rand() - 1)
-        double vz = vmax*(2*rand() - 1)
-        double gamma = 1/math.sqrt(1 - vx*vx - vy*vy - vz*vz)
+        double vmag = random.rand(&rng)
+        double gamma = 1/math.sqrt(1 - vmag*vmag)
+        double vx, vy, vz
+
+    random.direction(&rng, &vx, &vy, &vz)
+    vx *= vmag
+    vy *= vmag
+    vz *= vmag
 
     cdef FourVector u
     u.t = gamma
@@ -28,12 +32,12 @@ def _test_fourvec():
     assert math.fabs(uu - 1) < 1e-15, \
         'Four-velocity is not normalized: {} != 1'.format(uu)
 
-    cdef double m = rand() + .1
+    cdef double m = random.rand(&rng) + .1
 
     cdef FourVector p
-    p.x = 2*rand() - 1
-    p.y = 2*rand() - 1
-    p.z = 2*rand() - 1
+    p.x = 2*random.rand(&rng) - 1
+    p.y = 2*random.rand(&rng) - 1
+    p.z = 2*random.rand(&rng) - 1
     p.t = math.sqrt(m*m + p.x*p.x + p.y*p.y + p.z*p.z)
 
     cdef double pp = fourvec.square(&p)
@@ -47,10 +51,10 @@ def _test_fourvec():
         'Boosted four-momentum is not normalized: {} != {}'.format(pp, m*m)
 
     cdef FourVector a
-    a.t = rand()
-    a.x = rand()
-    a.y = rand()
-    a.z = rand()
+    a.t = random.rand(&rng)
+    a.x = random.rand(&rng)
+    a.y = random.rand(&rng)
+    a.z = random.rand(&rng)
 
     cdef:
         double vsq = vx*vx + vy*vy + vz*vz
@@ -85,10 +89,10 @@ def _test_fourvec():
 
     fourvec.boost_inverse(&a, &u)
     assert all([
-        math.fabs(a.t/a_boosted[0] - 1) < 1e-15,
-        math.fabs(a.x/a_boosted[1] - 1) < 1e-15,
-        math.fabs(a.y/a_boosted[2] - 1) < 1e-15,
-        math.fabs(a.z/a_boosted[3] - 1) < 1e-15,
+        math.fabs(a.t/a_boosted[0] - 1) < 1e-14,
+        math.fabs(a.x/a_boosted[1] - 1) < 1e-14,
+        math.fabs(a.y/a_boosted[2] - 1) < 1e-14,
+        math.fabs(a.z/a_boosted[3] - 1) < 1e-14,
     ]), 'Boost does not agree with full boost matrix.'
 
     cdef FourVector neg_u = u
@@ -105,8 +109,8 @@ def _test_fourvec():
     ]), 'Boosted four-velocity is not zero: {}'.format(u)
 
     cdef:
-        double vx1 = .99*(2*rand() - 1)
-        double vx2 = .99*(2*rand() - 1)
+        double vx1 = .99*(2*random.rand(&rng) - 1)
+        double vx2 = .99*(2*random.rand(&rng) - 1)
         double gamma1 = 1/math.sqrt(1 - vx1*vx1)
         double gamma2 = 1/math.sqrt(1 - vx2*vx2)
 

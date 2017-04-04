@@ -14,7 +14,8 @@ from cpython.buffer cimport Py_buffer, PyBUF_FORMAT
 
 from . cimport fourvec
 from .fourvec cimport FourVector
-from .random cimport seed_rand, rand
+from . cimport random
+from .random cimport RNG
 
 cdef extern from "quadrature.h":
     size_t NQUADPTS_M, NQUADPTS_P
@@ -25,11 +26,6 @@ cdef extern from "quadrature.h":
 
 
 __all__ = ['Surface', 'HRG', 'sample']
-
-
-seed_rand()
-
-DEF TWO_PI = 6.28318530717958648
 
 
 cdef struct ShearTensor:
@@ -589,7 +585,7 @@ cdef double integrate_species(
 cdef void sample_four_momentum(
     const SpeciesInfo* s, double T,
     double shear_pscale, const ShearTensor* pi, double bulk_pscale,
-    FourVector* p
+    RNG* rng, FourVector* p
 ) nogil:
     """
     Choose a random four-momentum, with mass either constant (for stable
@@ -627,26 +623,21 @@ cdef void sample_four_momentum(
             P = 1
         else:
             # sample proposal mass from Breit-Wigner
-            m = bw_icdf(s, rand())
+            m = bw_icdf(s, random.rand(rng))
             P = bw_accept_prob(s, m)
 
         # sample proposal x from envelope x^2*exp(-x/xscale)
-        r = (1 - rand())*(1 - rand())*(1 - rand())
+        r = random.rand_c(rng) * random.rand_c(rng) * random.rand_c(rng)
         pmag = -T*s.xscale*math.log(r)
 
         # acceptance probability
         P *= s.Pscale / r / (math.exp(math.sqrt(m*m + pmag*pmag)/T) + s.sign)
 
-        if rand() < P:
+        if random.rand(rng) < P:
             break
 
-    cdef:
-        # sample 3D direction
-        double rz = 2*rand() - 1  # cos(theta)
-        double sin_theta = math.sqrt(1 - rz*rz)
-        double phi = TWO_PI*rand()
-        double rx = sin_theta*math.cos(phi)
-        double ry = sin_theta*math.sin(phi)
+    cdef double rx, ry, rz
+    random.direction(rng, &rx, &ry, &rz)
 
     # compute 3D momentum vector with viscous corrections
     p.x = pmag*(bulk_pscale*rx + shear_pscale*(rx*pi.xx + ry*pi.xy + rz*pi.xz))
@@ -1088,7 +1079,7 @@ cdef inline void add_particle(
     particles.n += 1
 
 
-cdef void decay_f500(ParticleArray particles) nogil:
+cdef void decay_f500(ParticleArray particles, RNG* rng) nogil:
     """
     Decay all f(0)(500) resonances into pion pairs.
 
@@ -1110,8 +1101,6 @@ cdef void decay_f500(ParticleArray particles) nogil:
         Particle* part
         # parent and daughter particles mass and momentum
         double M, P, m, p
-        # spherical angles
-        double cos_theta, sin_theta, phi
         # ID number of second daughter particle
         int ID2
         # four-velocity and position of parent particle
@@ -1134,7 +1123,7 @@ cdef void decay_f500(ParticleArray particles) nogil:
         # choose decay channel:
         #   pi0 pi0  (1/3)
         #   pi+ pi-  (2/3)
-        if rand() < .333333333:
+        if random.rand(rng) < .3333333333333333:
             part.ID = 111
             ID2 = 111
             m = .1349766
@@ -1159,16 +1148,12 @@ cdef void decay_f500(ParticleArray particles) nogil:
         # momentum magnitude of daughters in parent's rest frame
         p = math.sqrt(M*M - 4*m*m)/2
 
-        # sample isotropic direction
-        cos_theta = 2*rand() - 1
-        sin_theta = math.sqrt(1 - cos_theta*cos_theta)
-        phi = TWO_PI*rand()
-
         # first daughter's four-momentum in parent's rest frame
         p_prime.t = M/2
-        p_prime.x = p*sin_theta*math.cos(phi)
-        p_prime.y = p*sin_theta*math.sin(phi)
-        p_prime.z = p*cos_theta
+        random.direction(rng, &p_prime.x, &p_prime.y, &p_prime.z)
+        p_prime.x *= p
+        p_prime.y *= p
+        p_prime.z *= p
 
         # boost and freestream first daughter
         part.p = p_prime
@@ -1202,7 +1187,9 @@ cdef void freestream(Particle* part, double t) nogil:
     part.x.z += part.p.z * t_over_E
 
 
-cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
+cdef void _sample(
+    Surface surface, HRG hrg, RNG* rng, ParticleArray particles
+) nogil:
     """
     Sample an ensemble of particles from freeze-out hypersurface `surface`,
     using thermodynamic quantities (temperature, etc) and species information
@@ -1224,7 +1211,7 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
         SpeciesInfo* species
         FourVector x, p
 
-    N = math.log(1 - rand())
+    N = math.log(random.rand_c(rng))
 
     for elem in surface.data[:surface.n]:
         if surface.bulk:
@@ -1243,12 +1230,12 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
 
             while N > 0:
                 # adding a negative number
-                N += math.log(1 - rand())
+                N += math.log(random.rand_c(rng))
 
                 sample_four_momentum(
                     species, hrg.T,
                     hrg.shear_pscale, &elem.pi, bulk_pscale,
-                    &p
+                    rng, &p
                 )
                 fourvec.boost_inverse(&p, &elem.u)
 
@@ -1258,10 +1245,10 @@ cdef void _sample(Surface surface, HRG hrg, ParticleArray particles) nogil:
 
                 p_dot_sigma_max = elem.vmax*fourvec.dot(&p, &elem.u)
 
-                if p_dot_sigma > p_dot_sigma_max*rand():
+                if p_dot_sigma > p_dot_sigma_max*random.rand(rng):
                     if surface.boost_invariant:
                         y_minus_eta_s = .5*math.log((p.t + p.z)/(p.t - p.z))
-                        y = surface.ymax*(2*rand() - 1)
+                        y = surface.ymax*(2*random.rand(rng) - 1)
                         eta_s = y - y_minus_eta_s
                         cosh_eta_s = math.cosh(eta_s)
                         sinh_eta_s = math.sinh(eta_s)
@@ -1301,9 +1288,12 @@ def sample(Surface surface not None, HRG hrg not None):
     if surface.bulk and not hrg.bulk_prepared:
         hrg._prepare_bulk()
 
+    cdef RNG rng
+
     with nogil:
-        _sample(surface, hrg, particles)
+        random.init(&rng)
+        _sample(surface, hrg, &rng, particles)
         if hrg.decay_f500:
-            decay_f500(particles)
+            decay_f500(particles, &rng)
 
     return np.asarray(particles)
