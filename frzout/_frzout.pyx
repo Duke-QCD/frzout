@@ -669,6 +669,12 @@ cdef class HRG:
             self, double T,
             object species='all', bint res_width=True, bint decay_f500=False
     ):
+        if T > .192:
+            warnings.warn(
+                'T = {} GeV is a very high particlization temperature -- '
+                'momentum sampling may be inaccurate'.format(T)
+            )
+
         self.T = T
 
         cdef list species_items = _normalize_species(species)
