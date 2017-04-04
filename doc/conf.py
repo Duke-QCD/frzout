@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.curdir))
 project = 'frzout'
 version = release = frzout.__version__
 author = 'Jonah Bernhard'
-copyright = '2016 ' + author
+copyright = '2017 ' + author
 
 source_suffix = '.rst'
 master_doc = 'index'

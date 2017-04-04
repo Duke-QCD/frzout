@@ -574,7 +574,7 @@ def bulk_viscous_corrections(axes):
     pressure.  This works for negative bulk pressure all the way down to zero
     total pressure, but for positive bulk pressure, the necessary momentum
     scale factor diverges as the total pressure approaches twice the
-    equilibrium pressure.  The momentum scale is therefore restricted to
+    equilibrium pressure.  The momentum scale is therefore restricted to a
     reasonable maximum (3) which effectively limits the positive bulk pressure
     to around 70% of the equilibrium pressure, depending on the hadron gas
     temperature and composition.
