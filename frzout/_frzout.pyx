@@ -451,12 +451,12 @@ cdef enum Quantity:
     cs2_numer
     cs2_denom
     eta_over_tau
-    zeta_over_tau
+    zeta_over_tau_1_cs2
+    zeta_over_tau_2
 
 
 cdef double _integrate_momentum(
-    Quantity quantity, double m, int sign,
-    double T, double pscale, double cs2
+    Quantity quantity, double m, int sign, double T, double pscale
 ) nogil:
     """
     Do not call directly -- use integrate_species().
@@ -512,8 +512,12 @@ cdef double _integrate_momentum(
             g = (m2 + p2) * (1 - sign*f)
         elif quantity == eta_over_tau:
             g = p2**2/(m2 + p2) / (15*T) * (1 - sign*f)
-        elif quantity == zeta_over_tau:
-            g = m2 / (3*T) * (cs2 - p2/(3*(m2 + p2))) * (1 - sign*f)
+        # Break zeta/tau into two parts since the integrand contains c_s^2,
+        # which is itself the result of another integral.
+        elif quantity == zeta_over_tau_1_cs2:
+            g = m2 / (3*T) * (1 - sign*f)
+        elif quantity == zeta_over_tau_2:
+            g = m2 / (3*T) * p2/(3*(m2 + p2)) * (1 - sign*f)
         else:
             return 0
 
@@ -525,8 +529,7 @@ cdef double _integrate_momentum(
 
 
 cdef double _integrate_mass_momentum(
-    Quantity q, const SpeciesInfo* s,
-    double T, double pscale, double cs2
+    Quantity q, const SpeciesInfo* s, double T, double pscale
 ) nogil:
     """
     Do not call directly -- use integrate_species().
@@ -550,16 +553,15 @@ cdef double _integrate_mass_momentum(
         m2 = s.m_min + dm*(1 - quadpts_m[i].x)
 
         total += quadpts_m[i].w * (
-            bw_dist(s, m1)*_integrate_momentum(q, m1, s.sign, T, pscale, cs2) +
-            bw_dist(s, m2)*_integrate_momentum(q, m2, s.sign, T, pscale, cs2)
+            bw_dist(s, m1)*_integrate_momentum(q, m1, s.sign, T, pscale) +
+            bw_dist(s, m2)*_integrate_momentum(q, m2, s.sign, T, pscale)
         )
 
     return s.bw_norm * dm * total
 
 
 cdef double integrate_species(
-    Quantity quantity, const SpeciesInfo* s,
-    double T, double pscale=1, double cs2=0
+    Quantity quantity, const SpeciesInfo* s, double T, double pscale=1
 ) nogil:
     """
     Compute a thermodynamic quantity for the given species and temperature by
@@ -568,16 +570,13 @@ cdef double integrate_species(
     The momentum scale factor `pscale` parametrizes the system's deviation from
     thermal equilibrium.  It is used for bulk viscous corrections.
 
-    The speed of sound squared `cs2` is required for (zeta/tau), otherwise it
-    is not used.
-
     """
     cdef double I
 
     if s.stable:
-        I = _integrate_momentum(quantity, s.m0, s.sign, T, pscale, cs2)
+        I = _integrate_momentum(quantity, s.m0, s.sign, T, pscale)
     else:
-        I = _integrate_mass_momentum(quantity, s, T, pscale, cs2)
+        I = _integrate_mass_momentum(quantity, s, T, pscale)
 
     return s.degen * I
 
@@ -720,16 +719,15 @@ cdef class HRG:
 
         """
         cdef:
-            double cs2 = self.cs2() if quantity == zeta_over_tau else 0
             double total, last
             SpeciesInfo* s = self.data
 
         with nogil:
-            total = last = integrate_species(quantity, s, self.T, pscale, cs2)
+            total = last = integrate_species(quantity, s, self.T, pscale)
             for s in self.data[1:self.n]:
                 # reuse previous calculation if possible
                 if not equiv_species(s, s - 1):
-                    last = integrate_species(quantity, s, self.T, pscale, cs2)
+                    last = integrate_species(quantity, s, self.T, pscale)
                 total += last
 
         return total
@@ -789,7 +787,10 @@ cdef class HRG:
         Bulk viscosity over relaxation time [GeV/fm^3].
 
         """
-        return self._sum_integrals(zeta_over_tau)
+        return (
+            self._sum_integrals(zeta_over_tau_1_cs2) * self.cs2() -
+            self._sum_integrals(zeta_over_tau_2)
+        )
 
     cdef void _prepare_shear(self):
         """
