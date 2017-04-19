@@ -659,8 +659,8 @@ cdef class HRG:
         readonly double T
         double total_density
         double shear_pscale
-        double[::1] bulk_spline_x
-        double[:, :, ::1] bulk_spline_c
+        double[::1] bulk_spl_x
+        double[:, :, ::1] bulk_spl_c
         int decay_f500
         int shear_prepared, bulk_prepared
 
@@ -712,23 +712,23 @@ cdef class HRG:
         """
         return np.asarray(<SpeciesInfo[:self.n]> self.data)
 
-    cdef double _sum_integrals(self, Quantity quantity, double pscale=1):
+    @cython.final
+    cdef double compute(self, Quantity quantity, double pscale=1) nogil:
         """
-        Compute the sum of the given phase-space integral over all the species
-        in this HRG.
+        Compute the given thermodynamic quantity.
 
         """
         cdef:
             double total, last
             SpeciesInfo* s = self.data
 
-        with nogil:
-            total = last = integrate_species(quantity, s, self.T, pscale)
-            for s in self.data[1:self.n]:
-                # reuse previous calculation if possible
-                if not equiv_species(s, s - 1):
-                    last = integrate_species(quantity, s, self.T, pscale)
-                total += last
+        # sum integrals over all species
+        total = last = integrate_species(quantity, s, self.T, pscale)
+        for s in self.data[1:self.n]:
+            # reuse previous calculation if possible
+            if not equiv_species(s, s - 1):
+                last = integrate_species(quantity, s, self.T, pscale)
+            total += last
 
         return total
 
@@ -737,62 +737,107 @@ cdef class HRG:
         Particle density [fm^-3].
 
         """
-        # return self._sum_integrals(density)
         return self.total_density
 
-    cpdef double energy_density(self):
+    def energy_density(self):
         """
         Energy density [GeV/fm^3].
 
         """
-        return self._sum_integrals(energy_density)
+        cdef double result
 
-    cpdef double pressure(self):
+        with nogil:
+            result = self.compute(energy_density)
+
+        return result
+
+    def pressure(self):
         """
         Pressure [GeV/fm^3].
 
         """
-        return self._sum_integrals(pressure)
+        cdef double result
+
+        with nogil:
+            result = self.compute(pressure)
+
+        return result
 
     def entropy_density(self):
         """
         Entropy density [fm^-3].
 
         """
-        return (self.energy_density() + self.pressure()) / self.T
+        cdef double result
+
+        with nogil:
+            result = (
+                self.compute(energy_density) + self.compute(pressure)
+            ) / self.T
+
+        return result
 
     def mean_momentum(self):
         """
         Average magnitude of momentum [GeV].
 
         """
-        return self._sum_integrals(momentum_density) / self.total_density
+        cdef double result
 
-    cpdef double cs2(self):
+        with nogil:
+            result = self.compute(momentum_density) / self.total_density
+
+        return result
+
+    @cython.final
+    cdef double _cs2(self) nogil:
+        """
+        Speed of sound squared (internal C function).
+
+        """
+        return self.compute(cs2_numer) / self.compute(cs2_denom)
+
+    def cs2(self):
         """
         Speed of sound squared.
 
         """
-        return self._sum_integrals(cs2_numer) / self._sum_integrals(cs2_denom)
+        cdef double result
 
-    cpdef double eta_over_tau(self):
+        with nogil:
+            result = self._cs2()
+
+        return result
+
+    def eta_over_tau(self):
         """
         Shear viscosity over relaxation time [GeV/fm^3].
 
         """
-        return self._sum_integrals(eta_over_tau)
+        cdef double result
 
-    cpdef double zeta_over_tau(self):
+        with nogil:
+            result = self.compute(eta_over_tau)
+
+        return result
+
+    def zeta_over_tau(self):
         """
         Bulk viscosity over relaxation time [GeV/fm^3].
 
         """
-        return (
-            self._sum_integrals(zeta_over_tau_1_cs2) * self.cs2() -
-            self._sum_integrals(zeta_over_tau_2)
-        )
+        cdef double result
 
-    cdef void _prepare_shear(self):
+        with nogil:
+            result = (
+                self.compute(zeta_over_tau_1_cs2) * self._cs2() -
+                self.compute(zeta_over_tau_2)
+            )
+
+        return result
+
+    @cython.final
+    cdef void prepare_shear(self):
         """
         Prepare for sampling with shear viscous corrections by pre-calculating
         the shear momentum scale factor = tau/(2*eta).  Shear corrections are
@@ -803,10 +848,11 @@ cdef class HRG:
         with both p_i and the shear tensor pi_ij in the local rest frame.
 
         """
-        self.shear_pscale = .5/self.eta_over_tau()
+        self.shear_pscale = .5/self.compute(eta_over_tau)
         self.shear_prepared = 1
 
-    cdef void _prepare_bulk(self):
+    @cython.final
+    cdef void prepare_bulk(self):
         """
         Prepare for sampling with bulk viscous corrections by pre-calculating
         an interpolation table of density and momentum scale factors.
@@ -815,8 +861,8 @@ cdef class HRG:
         # equilibrium quantities
         cdef:
             double n0 = self.total_density
-            double e0 = self.energy_density()
-            double p0 = self.pressure()
+            double e0 = self.compute(energy_density)
+            double p0 = self.compute(pressure)
 
         cdef:
             Py_ssize_t npoints = 20
@@ -841,7 +887,7 @@ cdef class HRG:
         for i in range(npoints):
             # first entry has pscale == 0 and zero total pressure
             if i == 0:
-                nscale[i] = e0/self._sum_integrals(mass_density)
+                nscale[i] = e0/self.compute(mass_density)
                 Pi[i] = -p0
                 continue
 
@@ -852,9 +898,9 @@ cdef class HRG:
                 continue
 
             # compute thermodynamic quantities at this pscale
-            n = self._sum_integrals(density, pscale=pscale[i])
-            e = self._sum_integrals(energy_density, pscale=pscale[i])
-            p = self._sum_integrals(pressure, pscale=pscale[i])
+            n = self.compute(density, pscale=pscale[i])
+            e = self.compute(energy_density, pscale=pscale[i])
+            p = self.compute(pressure, pscale=pscale[i])
 
             # Choose nscale so that energy density is preserved:
             #
@@ -883,21 +929,56 @@ cdef class HRG:
         spline = CubicSpline(Pi, [nscale, np.square(pscale)], axis=1)
 
         # save spline breakpoints and coefficients
-        self.bulk_spline_x = spline.x
-        self.bulk_spline_c = spline.c
+        self.bulk_spl_x = spline.x
+        self.bulk_spl_c = spline.c
 
         self.bulk_prepared = 1
 
-    def Pi_lim(self):
+    @cython.final
+    cdef void compute_bulk_scale_factors(
+        self, double Pi, double* nscale, double* pscale
+    ) nogil:
         """
-        Minimum and maximum allowable bulk pressure [GeV/fm^3].
+        Compute the bulk scale factors (`nscale`, `pscale`) at the given bulk
+        pressure `Pi` by evaluating the interpolating spline constructed in
+        prepare_bulk().
 
         """
-        if not self.bulk_prepared:
-            self._prepare_bulk()
+        cdef:
+            Py_ssize_t i
+            Py_ssize_t imax = self.bulk_spl_x.shape[0] - 1
+            double Pimin = self.bulk_spl_x[0]
+            double Pimax = self.bulk_spl_x[imax]
 
-        with cython.wraparound(True):
-            return self.bulk_spline_x[0], self.bulk_spline_x[-1]
+        # Find the interval i such that x[i] <= Pi < x[i + 1].
+        # First, check that Pi is within the table range.  If not, clip to the
+        # range and use the first or last interval as appropriate.
+        if Pi <= Pimin:
+            Pi = Pimin
+            i = 0
+        elif Pi >= Pimax:
+            Pi = Pimax
+            i = imax - 1
+        else:
+            # Guess the interval using a single interpolation search step.  The
+            # breakpoints are roughly evenly spaced to this will be off by at
+            # most one or two steps.
+            i = <Py_ssize_t>((Pi - Pimin)/(Pimax - Pimin) * imax)
+            # Now use linear search to find the precise interval.
+            if self.bulk_spl_x[i] > Pi:
+                while True:
+                    i -= 1
+                    if self.bulk_spl_x[i] <= Pi:
+                        break
+            else:
+                while Pi >= self.bulk_spl_x[i + 1]:
+                    i += 1
+
+        # Evaluate the piecewise polynomial in the determined interval.
+        Pi -= self.bulk_spl_x[i]
+        nscale[0] = eval_poly(self.bulk_spl_c, i, 0, Pi)
+        # Remember to take sqrt since the spline is fit to pscale *squared*!
+        pscale[0] = math.sqrt(eval_poly(self.bulk_spl_c, i, 1, Pi))
 
     def bulk_scale_factors(self, double Pi):
         """
@@ -906,61 +987,23 @@ cdef class HRG:
 
         """
         if not self.bulk_prepared:
-            self._prepare_bulk()
+            self.prepare_bulk()
 
         cdef double nscale, pscale
-
-        compute_bulk_scale_factors(
-            self.bulk_spline_x, self.bulk_spline_c, Pi,
-            &nscale, &pscale
-        )
+        self.compute_bulk_scale_factors(Pi, &nscale, &pscale)
 
         return nscale, pscale
 
+    def Pi_lim(self):
+        """
+        Minimum and maximum allowable bulk pressure [GeV/fm^3].
 
-cdef void compute_bulk_scale_factors(
-    double[::1] x, double[:, :, ::1] c, double Pi,
-    double* nscale, double* pscale
-) nogil:
-    """
-    Compute the bulk scale factors (`nscale`, `pscale`) at the given bulk
-    pressure `Pi` by evaluating the interpolating spline with breakpoints `x`
-    and coefficients `c` [as determined in HRG._prepare_bulk()].
+        """
+        if not self.bulk_prepared:
+            self.prepare_bulk()
 
-    """
-    cdef:
-        double Pimin = x[0], Pimax = x[x.shape[0] - 1]
-        Py_ssize_t i
-
-    # Find the interval i such that x[i] <= Pi < x[i + 1].
-    # First, check that Pi is within the table range.  If not, clip to the
-    # range and use the first or last interval as appropriate.
-    if Pi <= Pimin:
-        Pi = Pimin
-        i = 0
-    elif Pi >= Pimax:
-        Pi = Pimax
-        i = x.shape[0] - 2
-    else:
-        # Guess the interval using a single interpolation search step.  The
-        # breakpoints are roughly evenly spaced to this will be off by at most
-        # one or two steps.
-        i = <Py_ssize_t>((Pi - Pimin)/(Pimax - Pimin) * (x.shape[0] - 1))
-        # Now use linear search to find the precise interval.
-        if x[i] > Pi:
-            while True:
-                i -= 1
-                if x[i] <= Pi:
-                    break
-        else:
-            while Pi >= x[i + 1]:
-                i += 1
-
-    # Evaluate the piecewise polynomial in the determined interval.
-    Pi -= x[i]
-    nscale[0] = eval_poly(c, i, 0, Pi)
-    # Remember to take sqrt since the spline is fit to pscale *squared*!
-    pscale[0] = math.sqrt(eval_poly(c, i, 1, Pi))
+        with cython.wraparound(True):
+            return self.bulk_spl_x[0], self.bulk_spl_x[-1]
 
 
 cdef inline double eval_poly(
@@ -1222,10 +1265,7 @@ cdef void _sample(
 
     for elem in surface.data[:surface.n]:
         if surface.bulk:
-            compute_bulk_scale_factors(
-                hrg.bulk_spline_x, hrg.bulk_spline_c, elem.Pi,
-                &bulk_nscale, &bulk_pscale
-            )
+            hrg.compute_bulk_scale_factors(elem.Pi, &bulk_nscale, &bulk_pscale)
 
         new_N = N + elem.vmax * hrg.total_density * bulk_nscale
         if new_N < 0:
@@ -1290,10 +1330,10 @@ def sample(Surface surface not None, HRG hrg not None):
     particles = ParticleArray(abs(surface.total_volume) * hrg.total_density)
 
     if surface.shear and not hrg.shear_prepared:
-        hrg._prepare_shear()
+        hrg.prepare_shear()
 
     if surface.bulk and not hrg.bulk_prepared:
-        hrg._prepare_bulk()
+        hrg.prepare_bulk()
 
     cdef RNG rng
 
