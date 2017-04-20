@@ -1,5 +1,6 @@
 # cython: boundscheck = False, wraparound = False, initializedcheck = False
 
+import threading
 import warnings
 
 import numpy as np
@@ -672,6 +673,7 @@ cdef class HRG:
         double[:, :, ::1] bulk_spl_c
         int decay_f500
         int shear_prepared, bulk_prepared
+        object lock
 
     def __cinit__(
             self, double T,
@@ -707,6 +709,8 @@ cdef class HRG:
             ID, info = species_items[i]
             init_species(self.data + i, ID, info, res_width, T)
             self.total_density += self.data[i].density
+
+        self.lock = threading.Lock()
 
     def __dealloc__(self):
         PyMem_Free(self.data)
@@ -857,8 +861,9 @@ cdef class HRG:
         with both p_i and the shear tensor pi_ij in the local rest frame.
 
         """
-        self.shear_pscale = .5/self.compute(eta_over_tau)
-        self.shear_prepared = 1
+        with nogil:
+            self.shear_pscale = .5/self.compute(eta_over_tau)
+            self.shear_prepared = 1
 
     @cython.final
     cdef void prepare_bulk(self):
@@ -892,43 +897,44 @@ cdef class HRG:
             double n, e, p
             Py_ssize_t i
 
-        # compute nscale and Pi at each pscale
-        for i in range(npoints):
-            # first entry has pscale == 0 and zero total pressure
-            if i == 0:
-                nscale[i] = e0/self.compute(mass_density)
-                Pi[i] = -p0
-                continue
+        with nogil:
+            # compute nscale and Pi at each pscale
+            for i in range(npoints):
+                # first entry has pscale == 0 and zero total pressure
+                if i == 0:
+                    nscale[i] = e0/self.compute(mass_density)
+                    Pi[i] = -p0
+                    continue
 
-            # equilibrium point
-            if i == i0:
-                nscale[i] = 1
-                Pi[i] = 0
-                continue
+                # equilibrium point
+                if i == i0:
+                    nscale[i] = 1
+                    Pi[i] = 0
+                    continue
 
-            # compute thermodynamic quantities at this pscale
-            n = self.compute(density, pscale=pscale[i])
-            e = self.compute(energy_density, pscale=pscale[i])
-            p = self.compute(pressure, pscale=pscale[i])
+                # compute thermodynamic quantities at this pscale
+                n = self.compute(density, pscale=pscale[i])
+                e = self.compute(energy_density, pscale=pscale[i])
+                p = self.compute(pressure, pscale=pscale[i])
 
-            # Choose nscale so that energy density is preserved:
-            #
-            #            average energy per particle at equilibrium
-            #   nscale = ------------------------------------------
-            #            average energy per particle at this pscale
-            #
-            # e.g. if each particle has half the energy on average, then need
-            # twice as many particles for the same total energy.
-            nscale[i] = (e0/n0) / (e/n)
+                # Choose nscale so that energy density is preserved:
+                #
+                #            average energy per particle at equilibrium
+                #   nscale = ------------------------------------------
+                #            average energy per particle at this pscale
+                #
+                # e.g. if each particle has half the energy on average, then
+                # need twice as many particles for the same total energy.
+                nscale[i] = (e0/n0) / (e/n)
 
-            # Given the above nscale, the actual effective pressure is
-            #
-            #   peff = (average pressure per particle) * (corrected density)
-            #        = (p/n)                           * (n0*nscale)
-            #        = p*e0/e
-            #
-            # and the bulk pressure is then the deviation from equilibrium.
-            Pi[i] = p*e0/e - p0
+                # Given the above nscale, the actual effective pressure is
+                #
+                #   peff = (average pressure / particle) * (corrected density)
+                #        = (p/n)                         * (n0*nscale)
+                #        = p*e0/e
+                #
+                # and the bulk pressure is then the deviation from equilibrium.
+                Pi[i] = p*e0/e - p0
 
         # Fit the scale factors to a cubic spline as a function of Pi.
         # Use the *square* of pscale to improve the fit at the low end;
@@ -1338,11 +1344,21 @@ def sample(Surface surface not None, HRG hrg not None):
     """
     particles = ParticleArray(abs(surface.total_volume) * hrg.total_density)
 
-    if surface.shear and not hrg.shear_prepared:
-        hrg.prepare_shear()
+    # Lock the HRG so that sample() is thread-safe.  Without a lock, a race
+    # condition is possible:
+    #
+    #   - Thread 1 finds bulk_prepared is false, calls prepare_bulk()
+    #   - While thread 1 is running prepare_bulk(), thread 2 finds
+    #     bulk_prepared is false, calls prepare_bulk().
+    #   - Thread 1 finishes prepare_bulk(), calls _sample(); thread 2 is still
+    #     running prepare_bulk().
+    #   - Thread 1 tries to access data that thread 2 is modifying -> segfault.
+    with hrg.lock:
+        if surface.shear and not hrg.shear_prepared:
+            hrg.prepare_shear()
 
-    if surface.bulk and not hrg.bulk_prepared:
-        hrg.prepare_bulk()
+        if surface.bulk and not hrg.bulk_prepared:
+            hrg.prepare_bulk()
 
     cdef RNG rng
 
