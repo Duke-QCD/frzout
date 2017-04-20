@@ -33,19 +33,16 @@ def test_surface():
     )
 
     x = np.random.uniform(0, 10, size=(1, 4))
-    sigma = np.random.uniform(0, 10, size=(1, 4))
+    # ensure sigma is timelike (sigma^2 > 0) so that the volume is positive
+    sigma = np.random.uniform([3, -1, -1, -1], [4, 1, 1, 1], size=(1, 4))
     v = np.random.uniform(-.5, .5, size=(1, 3))
 
     surf = Surface(x, sigma, v)
 
     assert not surf.boost_invariant, 'Surface should not be boost-invariant.'
 
-    gamma = 1/np.sqrt(1 - (v*v).sum())
-    u_ = np.empty(4)
-    u_[0] = gamma
-    u_[1:] = -gamma*v
-
-    volume = np.inner(sigma, u_)
+    u = np.insert(v, 0, 1) / np.sqrt(1 - (v*v).sum())
+    volume = np.inner(sigma, u)
 
     assert_almost_equal(
         surf.volume, volume, delta=1e-12,
@@ -54,6 +51,9 @@ def test_surface():
 
     with assert_warns(Warning):
         Surface(x, sigma, v, ymax=1.)
+
+    with assert_warns(Warning):
+        Surface(x, np.concatenate([[[0]], -v], axis=1), v)
 
     with assert_raises(ValueError):
         Surface(

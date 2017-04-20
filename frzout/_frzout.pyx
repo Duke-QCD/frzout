@@ -123,8 +123,10 @@ cdef class Surface:
             elem.x.y = x[i, 2]
 
             elem.sigma.t = sigma[i, 0]
-            elem.sigma.x = sigma[i, 1]
-            elem.sigma.y = sigma[i, 2]
+            # negative sign converts:
+            #   covariant (sigma_mu) -> contravariant (sigma^mu)
+            elem.sigma.x = -sigma[i, 1]
+            elem.sigma.y = -sigma[i, 2]
 
             vx = v[i, 0]
             vy = v[i, 1]
@@ -141,7 +143,7 @@ cdef class Surface:
                 elem.sigma.y *= sigma_scale
             else:
                 elem.x.z = x[i, 3]
-                elem.sigma.z = sigma[i, 3]
+                elem.sigma.z = -sigma[i, 3]
                 vz = v[i, 2]
 
             gamma = 1/math.sqrt(1 - vx*vx - vy*vy - vz*vz)
@@ -179,6 +181,13 @@ cdef class Surface:
                 elem.pi.yz = 0
 
             elem.Pi = Pi[i] if self.bulk else 0
+
+        if self.total_volume < 0:
+            warnings.warn(
+                'total freeze-out volume is negative -- '
+                'ensure that sigma is covariant (sigma_mu)'
+            )
+
 
     def __dealloc__(self):
         PyMem_Free(self.data)

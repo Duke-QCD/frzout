@@ -4,6 +4,7 @@ import glob
 import inspect
 import os
 import pickle
+import warnings
 from contextlib import contextmanager
 
 import numpy as np
@@ -316,9 +317,11 @@ def moving_box(axes):
         ux, uy, uz = gamma*v.ravel()
 
         volume = 1e6/hrg.density()
-        sigma = np.array([[volume, 0, 0, 0]])
-        sigma = np.atleast_2d(np.random.uniform(-.5*volume, 1.5*volume, 4))
-        surface = frzout.Surface(x, sigma, v)
+        sigma = np.random.uniform(-.5*volume, 1.5*volume, (1, 4))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore', 'total freeze-out volume is negative')
+            surface = frzout.Surface(x, sigma, v)
 
         def make_parts():
             n = 0
@@ -343,7 +346,7 @@ def moving_box(axes):
         E = np.sqrt(m*m + Px*Px + Py*Py + Pz*Pz)
         st, sx, sy, sz = sigma.ravel()
         dN = (
-            (E*st - Px*sx - Py*sy - Pz*sz)/E /
+            (E*st + Px*sx + Py*sy + Pz*sz)/E /
             (np.exp((E*gamma - Px*ux - Py*uy - Pz*uz)/T) + sign)
         )
         dN *= 2*g/(2*np.pi*hbarc)**3
@@ -355,7 +358,7 @@ def moving_box(axes):
 
             ax.annotate(
                 ''.join([
-                    '$\sigma^\mu = (',
+                    '$\sigma_\mu = (',
                     ', '.join('{:.3f}'.format(i/volume) for i in sigma.flat),
                     ')$\n',
                     '$v = (',
@@ -905,10 +908,9 @@ def _realistic_surface_observables():
     pixx, pixy, piyy = surface_data.T[11:14]
     Pi = surface_data.T[15]
 
-    sigma_ = np.zeros((sigma.shape[0], 4))
-    sigma_[:, :3] = sigma
-    sigma_[:, 1:] *= -1
-    sigma_ *= x[:, :1]
+    sigma4 = np.zeros((sigma.shape[0], 4))
+    sigma4[:, :3] = sigma
+    sigma4 *= x[:, :1]
 
     u_ = np.zeros((v.shape[0], 4))
     u_[:, 0] = 1
@@ -960,7 +962,7 @@ def _realistic_surface_observables():
         ]).T
 
         # ignore negative contributions
-        psigma = np.inner(p, sigma_)
+        psigma = np.inner(p, sigma4)
         psigma.clip(min=0, out=psigma)
 
         pu = np.inner(p, u_)
