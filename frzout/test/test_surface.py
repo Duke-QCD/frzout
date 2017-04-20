@@ -2,7 +2,11 @@
 
 import numpy as np
 
-from nose.tools import assert_almost_equal, assert_warns, assert_raises
+from nose.tools import (
+    assert_almost_equal,
+    assert_warns_regex,
+    assert_raises_regex,
+)
 
 from .. import Surface
 
@@ -49,27 +53,27 @@ def test_surface():
         msg='incorrect volume'
     )
 
-    with assert_warns(Warning):
+    with assert_warns_regex(Warning, 'ymax has no effect for 3D surfaces'):
         Surface(x, sigma, v, ymax=1.)
 
-    with assert_warns(Warning):
+    with assert_warns_regex(Warning, 'total freeze-out volume is negative'):
         Surface(x, np.concatenate([[[0]], -v], axis=1), v)
 
-    with assert_raises(ValueError):
+    with assert_raises_regex(ValueError, 'invalid shape'):
         Surface(
             np.ones((1, 1)),
             np.ones((1, 1)),
             np.ones((1, 1)),
         )
 
-    with assert_raises(ValueError):
+    with assert_raises_regex(ValueError, 'invalid shape'):
         Surface(
             np.ones((1, 4)),
             np.ones((1, 3)),
             np.ones((1, 2)),
         )
 
-    with assert_raises(ValueError):
+    with assert_raises_regex(ValueError, 'invalid shape'):
         Surface(
             np.ones((2, 4)),
             np.ones((2, 4)),

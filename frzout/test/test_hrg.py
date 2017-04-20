@@ -6,7 +6,7 @@ import numpy as np
 from scipy import integrate
 from scipy import special
 
-from nose.tools import assert_almost_equal, assert_warns
+from nose.tools import assert_almost_equal, assert_warns_regex
 
 from .. import HRG, species_dict
 
@@ -64,7 +64,7 @@ def test_hrg():
         msg='incorrect pressure'
     )
 
-    with assert_warns(Warning):
+    with assert_warns_regex(Warning, 'high particlization temperature'):
         HRG(.193)
 
 
