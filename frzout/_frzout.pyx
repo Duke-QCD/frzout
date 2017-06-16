@@ -13,6 +13,11 @@ from libc cimport math
 from cpython.mem cimport PyMem_Malloc, PyMem_Realloc, PyMem_Free
 from cpython.buffer cimport Py_buffer, PyBUF_FORMAT
 
+# workaround for incorrect fma signature in cython < 0.25
+# https://github.com/cython/cython/pull/557
+cdef extern from * nogil:
+    double math_fma "fma"(double x, double y, double z)
+
 from . cimport fourvec
 from .fourvec cimport FourVector
 from . cimport random
@@ -1039,7 +1044,7 @@ cdef inline double eval_poly(
 
     # Horner's method using fused multiply-add: fma(x, y, z) = x*y + z
     for k in range(c.shape[0]):
-        result = math.fma(result, x, c[k, i, d])
+        result = math_fma(result, x, c[k, i, d])
 
     return result
 
