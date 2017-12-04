@@ -1196,11 +1196,11 @@ cdef void decay_f500(ParticleArray particles, RNG* rng) nogil:
         if random.rand(rng) < .3333333333333333:
             part.ID = 111
             ID2 = 111
-            m = .1349766
+            m = .1349770
         else:
             part.ID = 211
             ID2 = -211
-            m = .13957018
+            m = .13957061
 
         # momentum and mass of parent
         P = math.sqrt(part.p.x**2 + part.p.y**2 + part.p.z**2)

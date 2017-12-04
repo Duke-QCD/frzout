@@ -26,7 +26,7 @@ def test_species():
     assert pion_data['name'] == 'pi', \
         'Incorrect pion name.'
 
-    assert abs(pion_data['mass'] - .13957018) < 1e-15, \
+    assert abs(pion_data['mass'] - .13957061) < 1e-15, \
         'Incorrect pion mass.'
 
     assert pion_data['has_anti'], \
