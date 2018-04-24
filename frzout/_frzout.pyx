@@ -45,8 +45,70 @@ cdef struct SurfaceElem:
 
 cdef class Surface:
     """
-    Represents a freeze-out hypersurface.
-    Manages memory for an array of `SurfaceElem`.
+    Surface(x, sigma, v, pi=None, Pi=None, ymax=None)
+
+    A particlization hypersurface.
+
+    A surface consists of a collection of volume elements.  This class is
+    initialized with arrays containing data for each volume element.
+
+    This class handles both 2D (boost-invariant) and 3D surfaces.
+
+    **Required parameters**
+
+    These must be array-like objects of shape *(n_volume_elements,
+    n_components)*, where the number of volume elements must be the same for
+    all arrays.
+
+    - *x* -- spacetime position
+
+      - components: (t, x, y, z)
+      - units: fm
+
+    - *sigma* -- normal vector (covariant, i.e. sigma_mu, not sigma^mu)
+
+      - components: (sigma_t, sigma_x, sigma_y, sigma_z)
+      - units: fm^3
+
+    - *v* -- velocity
+
+      - components: (vx, vy, vz)
+      - units: dimensionless (relative to speed of light)
+
+    The components listed above are for 3D surfaces.  For 2D (boost-invariant)
+    surfaces, there is no longitudinal (z) component and time (t) is replaced
+    by proper time (tau).  For example, the components of *x* for a 2D surface
+    are (tau, x, y).  In addition, the units of *sigma* are fm^2 for a 2D
+    surface (normal vectors are internally multiplied by tau).  The
+    dimensionality of a surface is inferred from the shapes of these arrays.
+
+    **Optional parameters**
+
+    - *pi* -- shear viscous pressure tensor
+
+      A mapping (dict-like object) whose keys are two-character strings
+      ``'ij'`` representing components of pi^ij, e.g. ``'xx'`` for pi^xx, and
+      values are array-like objects of shape *(n_volume_elements,)* containing
+      the appropriate components in units of GeV/fm^3.
+
+      2D surfaces require components ``'xx'``, ``'xy'``, ``'yy'``.
+      3D surfaces additionally require ``'xz'``, ``'yz'``.
+      The remaining components are computed internally by tracelessness and
+      orthogonality to the velocity.
+
+    - *Pi* -- bulk viscous pressure
+
+      Array-like object of shape *(n_volume_elements,)* containing the bulk
+      pressure in units of GeV/fm^3.
+
+    - *ymax* -- maximum momentum rapidity
+
+      For 2D surfaces, momentum rapidity is sampled uniformly from −ymax to
+      +ymax.  The default is 0.5.  Note that the number of particles per unit
+      rapidity is a physical property, so the average number of produced
+      particles is proportional to ymax.
+
+      Has no effect for 3D surfaces.
 
     """
     cdef:
@@ -55,6 +117,7 @@ cdef class Surface:
         double total_volume
         double ymax
         readonly bint boost_invariant
+        """ Whether the surface is boost-invariant or not (2D or 3D). """
         int shear, bulk
 
     def __cinit__(self, x, sigma, v, pi=None, Pi=None, ymax=None):
@@ -213,21 +276,21 @@ cdef class Surface:
     def __len__(self):
         return self.n
 
-    property volume:
+    @property
+    def volume(self):
         """
-        Total freeze-out volume.
+        The total volume of all elements [fm^3].
 
         """
-        def __get__(self):
-            return self.total_volume
+        return self.total_volume
 
 
 cdef void boost_pi_lrf(ShearTensor* pi, const FourVector* u) nogil:
     """
     Boost shear tensor `pi` with flow velocity `u` to its local rest frame.
     `pi` must have its (xx, yy, xy, xz, yz) components set; the remaining
-    components are determined because pi must is traceless and orthogonal to
-    the flow velocity.
+    components are determined because pi is traceless and orthogonal to the
+    flow velocity.
 
     """
     cdef:
@@ -676,8 +739,34 @@ cdef void sample_four_momentum(
 
 cdef class HRG:
     """
-    A hadron resonance gas, i.e. a set of particle species.
-    Manages memory for an array of `SpeciesInfo`.
+    HRG(T, species='all', res_width=True, decay_f500=False)
+
+    A hadron resonance gas.
+
+    *T* sets the temperature of the gas in GeV.
+
+    *species* sets the composition of the gas, i.e. the list of particle
+    species.  It may be one of:
+
+    - ``'all'`` (default) -- all known particle species
+    - ``'urqmd'`` -- species in UrQMD
+    - ``'id'`` -- identified particles (pions, kaons, and protons)
+    - a sequence of particle IDs (do not include antiparticle IDs --- they will
+      be added automatically)
+
+    If *res_width* is True (default), the mass width of resonances is taken
+    into account: Mass distributions are integrated when computing
+    thermodynamic quantities, and the masses of resonances are randomly chosen
+    during sampling.  Otherwise, mass distributions are ignored, and every
+    sampled resonance is assigned its pole mass.  Enabling this option
+    increases computation time.
+
+    If *decay_f500* is True, f(0)(500) resonances are decayed into pion pairs.
+    The default is False.  This is a workaround for hadronic afterburners that
+    are not aware of the f(0)(500), such as UrQMD.  This option is
+    automatically enabled if *species* is set to ``'urqmd'``.  If for some
+    reason this is not desirable, set *species* to ``frzout.species.urqmd``,
+    which does not enable *decay_f500*.
 
     """
     cdef:
@@ -829,7 +918,7 @@ cdef class HRG:
 
     def cs2(self):
         """
-        Speed of sound squared.
+        Speed of sound squared [relative to speed of light].
 
         """
         cdef double result
@@ -841,7 +930,7 @@ cdef class HRG:
 
     def eta_over_tau(self):
         """
-        Shear viscosity over relaxation time [GeV/fm^3].
+        Shear viscosity / relaxation time [GeV/fm^3].
 
         """
         cdef double result
@@ -853,7 +942,7 @@ cdef class HRG:
 
     def zeta_over_tau(self):
         """
-        Bulk viscosity over relaxation time [GeV/fm^3].
+        Bulk viscosity / relaxation time [GeV/fm^3].
 
         """
         cdef double result
@@ -1014,8 +1103,10 @@ cdef class HRG:
 
     def bulk_scale_factors(self, double Pi):
         """
-        Return the density and momentum scale factors (nscale, pscale) at the
-        given bulk pressure Pi.
+        bulk_scale_factors(Pi)
+
+        Returns a tuple ``(nscale, pscale)`` of the density and momentum scale
+        factors at the given bulk pressure *Pi* [GeV/fm^3].
 
         """
         if not self.bulk_prepared:
@@ -1028,7 +1119,8 @@ cdef class HRG:
 
     def Pi_lim(self):
         """
-        Minimum and maximum allowable bulk pressure [GeV/fm^3].
+        Returns a tuple ``(Pi_min, Pi_max)`` of the limiting values of bulk
+        pressure [GeV/fm^3].
 
         """
         if not self.bulk_prepared:
@@ -1273,9 +1365,8 @@ cdef void _sample(
     Surface surface, HRG hrg, RNG* rng, ParticleArray particles
 ) nogil:
     """
-    Sample an ensemble of particles from freeze-out hypersurface `surface`,
-    using thermodynamic quantities (temperature, etc) and species information
-    from `hrg`, and write data to `particles`.
+    Sample particles using the given Surface and HRG, writing data to the given
+    ParticleArray.
 
     It is *assumed* (not checked) that the HRG has been prepared for shear
     and/or bulk corrections if the surface requires it.  The wrapper function
@@ -1348,15 +1439,15 @@ cdef void _sample(
 
 def sample(Surface surface not None, HRG hrg not None):
     """
-    Sample an ensemble of particles from freeze-out hypersurface `surface`
-    using thermodynamic quantities (temperature, etc) and species information
-    from `hrg`.
+    sample(surface, hrg)
 
-    Return a numpy structured array with fields
+    Sample particles using the given `Surface` and `HRG`.
 
-        - 'ID' particle ID number
-        - 'x' position four-vector
-        - 'p' momentum four-vector
+    Returns particle data as a numpy structured array with fields
+
+    - ``'ID'`` -- particle ID number
+    - ``'x'`` -- position four-vector (t, x, y, z)
+    - ``'p'`` -- momentum four-vector (E, px, py, pz)
 
     """
     particles = ParticleArray(abs(surface.total_volume) * hrg.total_density)
