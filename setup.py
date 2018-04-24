@@ -14,8 +14,10 @@ def version():
     raise RuntimeError('unable to determine version')
 
 
-with open('README.rst') as f:
-    long_description = f.read()
+def long_description():
+    with open('README.rst') as f:
+        return f.read()
+
 
 # TODO only cythonize for dev builds
 ext_modules = cythonize([
@@ -33,8 +35,8 @@ ext_modules = cythonize([
 setup(
     name='frzout',
     version=version(),
-    description='Cooper-Frye hypersurface sampler',
-    long_description=long_description,
+    description='Particlization model for relativistic heavy-ion collisions',
+    long_description=long_description(),
     author='Jonah Bernhard',
     author_email='jonah.bernhard@gmail.com',
     url='https://github.com/Duke-QCD/frzout',
@@ -42,9 +44,9 @@ setup(
     packages=['frzout', 'frzout.test'],
     package_data={'frzout': ['mass_width_2017.mcd']},
     ext_modules=ext_modules,
-    install_requires=['numpy'],
+    install_requires=['numpy', 'scipy >= 0.18.0'],
     classifiers=[
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 5 - Production/Stable',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Cython',
@@ -52,10 +54,10 @@ setup(
         'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.3',
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
         'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
         'Topic :: Scientific/Engineering :: Physics'
     ]
 )
