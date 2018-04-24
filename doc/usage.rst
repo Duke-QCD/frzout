@@ -1,5 +1,11 @@
 Usage
 =====
 
-.. autoclass:: frzout.Sampler
-   :members:
+Sampling particles
+------------------
+
+Computing hadron gas quantities
+-------------------------------
+
+API reference
+-------------
