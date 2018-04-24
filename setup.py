@@ -4,6 +4,16 @@
 from setuptools import setup, Extension
 from Cython.Build import cythonize
 
+
+def version():
+    with open('frzout/__init__.py', 'r') as f:
+        for l in f:
+            if l.startswith('__version__ = '):
+                return l.split("'")[1]
+
+    raise RuntimeError('unable to determine version')
+
+
 with open('README.rst') as f:
     long_description = f.read()
 
@@ -22,7 +32,7 @@ ext_modules = cythonize([
 
 setup(
     name='frzout',
-    version='0.1.0',  # TODO single source version
+    version=version(),
     description='Cooper-Frye hypersurface sampler',
     long_description=long_description,
     author='Jonah Bernhard',
