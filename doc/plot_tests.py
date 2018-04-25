@@ -183,14 +183,15 @@ def stationary_box(axes):
     sigma = np.array([[volume/tau, 0, 0]])
     v = np.zeros((1, 2))
 
-    sampler = frzout.Sampler(x, sigma, v, T, ymax=ymax)
+    surface = frzout.Surface(x, sigma, v, ymax=ymax)
+    hrg = frzout.HRG(T)
 
     nsamples = 10000
-    samples = list(sampler.iter_samples(nsamples))
-    parts = np.concatenate(samples).view(np.recarray)
+    samples = [frzout.sample(surface, hrg) for _ in range(nsamples)]
+    parts = np.concatenate(samples)
 
-    abs_ID = np.abs(parts.ID)
-    E, px, py, pz = parts.p.T
+    abs_ID = np.abs(parts['ID'])
+    E, px, py, pz = parts['p'].T
 
     with axes(
             'Multiplicity distributions',
@@ -201,7 +202,7 @@ def stationary_box(axes):
             dist = stats.poisson(N)
             x = np.arange(*dist.ppf([.0001, .9999]).astype(int))
             ax.plot(x, dist.pmf(x), color=default_color)
-            N = np.array([np.count_nonzero(s.ID == i) for s in samples])
+            N = np.array([np.count_nonzero(s['ID'] == i) for s in samples])
             ax.hist(
                 N, bins=(np.arange(N.min(), N.max() + 2) - .5),
                 density=True, histtype='step',
@@ -219,7 +220,7 @@ def stationary_box(axes):
             'should also be Poissonian:'
     )) as ax:
         N = np.array([s.size for s in samples])
-        dist = stats.poisson(sampler.navg)
+        dist = stats.poisson(surface.volume * hrg.density())
         x = np.arange(*dist.ppf([.0001, .9999]).astype(int))
         ax.plot(x, dist.pmf(x), color=default_color)
         ax.hist(
