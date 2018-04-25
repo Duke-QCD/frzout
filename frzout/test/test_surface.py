@@ -15,9 +15,9 @@ def test_surface():
     volume = np.random.uniform(10, 100)
     tau = np.random.uniform(.5, 5.)
 
-    x = np.atleast_2d([tau, 0., 0.])
-    sigma = np.atleast_2d([volume/tau, 0., 0.])
-    v = np.zeros((1, 2))
+    x = [tau, 0, 0]
+    sigma = [volume/tau, 0, 0]
+    v = [0, 0]
 
     surf = Surface(x, sigma, v)
 
@@ -53,29 +53,62 @@ def test_surface():
         msg='incorrect volume'
     )
 
-    with assert_warns_regex(Warning, 'ymax has no effect for 3D surfaces'):
-        Surface(x, sigma, v, ymax=1.)
+    with assert_warns_regex(Warning, 'ymax has no effect for a 3D surface'):
+        Surface(x, sigma, v, ymax=np.random.rand())
 
     with assert_warns_regex(Warning, 'total freeze-out volume is negative'):
         Surface(x, np.concatenate([[[0]], -v], axis=1), v)
 
-    with assert_raises_regex(ValueError, 'invalid shape'):
-        Surface(
-            np.ones((1, 1)),
-            np.ones((1, 1)),
-            np.ones((1, 1)),
-        )
+    with assert_raises_regex(
+            ValueError,
+            'number of spacetime dimensions of x, sigma, and/or v'
+    ):
+        Surface([1, 0], [1, 0], 0)
 
-    with assert_raises_regex(ValueError, 'invalid shape'):
+    with assert_raises_regex(
+            ValueError,
+            'number of spacetime dimensions of x, sigma, and/or v'
+    ):
         Surface(
             np.ones((1, 4)),
             np.ones((1, 3)),
             np.ones((1, 2)),
         )
 
-    with assert_raises_regex(ValueError, 'invalid shape'):
+    with assert_raises_regex(
+            ValueError,
+            'number of elements of x, sigma, and/or v do not match'
+    ):
         Surface(
             np.ones((2, 4)),
             np.ones((2, 4)),
             np.ones((3, 3)),
+        )
+
+    with assert_raises_regex(
+            ValueError,
+            'number of elements of pi components do not match'
+    ):
+        Surface(
+            np.ones((3, 4)),
+            np.ones((3, 4)),
+            np.ones((3, 3)),
+            pi=dict(
+                xx=np.ones(3),
+                yy=np.ones(3),
+                xy=np.ones(3),
+                xz=np.ones(3),
+                yz=np.ones(4),
+            )
+        )
+
+    with assert_raises_regex(
+            ValueError,
+            'number of elements of Pi do not match'
+    ):
+        Surface(
+            np.ones((3, 4)),
+            np.ones((3, 4)),
+            np.ones((3, 3)),
+            Pi=np.ones(4)
         )

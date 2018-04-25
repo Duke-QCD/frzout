@@ -6,11 +6,7 @@ from .. import Surface, HRG, sample
 
 
 def test_dtype():
-    surface = Surface(
-        np.array([[1., 0., 0.]]),
-        np.array([[1., 0., 0.]]),
-        np.array([[0., 0.]]),
-    )
+    surface = Surface([1, 0, 0], [1, 0, 0], [0, 0])
     hrg = HRG(.15)
 
     parts = sample(surface, hrg)

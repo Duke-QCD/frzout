@@ -57,56 +57,69 @@ cdef class Surface:
         readonly bint boost_invariant
         int shear, bulk
 
-    def __cinit__(
-            self,
-            double[:, :] x not None,
-            double[:, :] sigma not None,
-            double[:, :] v not None,
-            object pi=None,
-            double[:] Pi=None,
-            double ymax=.5
-    ):
-        self.n = x.shape[0]
+    def __cinit__(self, x, sigma, v, pi=None, Pi=None, ymax=None):
+        # trailing underscores indicate cython memoryviews
+        cdef:
+            double[:, :] x_ = np.array(x, dtype=float, copy=False, ndmin=2)
+            double[:, :] sigma_ = np.array(sigma, dtype=float, copy=False, ndmin=2)
+            double[:, :] v_ = np.array(v, dtype=float, copy=False, ndmin=2)
 
-        # TODO more informative error messages below
+        self.n = x_.shape[0]
 
-        if x.shape[1] == 4 and sigma.shape[1] == 4 and v.shape[1] == 3:
+        if x_.shape[1] == 4 and sigma_.shape[1] == 4 and v_.shape[1] == 3:
             self.boost_invariant = 0
-            if ymax != .5:
-                warnings.warn('ymax has no effect for 3D surfaces')
-        elif x.shape[1] == 3 and sigma.shape[1] == 3 and v.shape[1] == 2:
+            if ymax is not None:
+                warnings.warn('ymax has no effect for a 3D surface')
+        elif x_.shape[1] == 3 and sigma_.shape[1] == 3 and v_.shape[1] == 2:
             self.boost_invariant = 1
+            self.ymax = (.5 if ymax is None else ymax)
         else:
-            raise ValueError('invalid shape')
+            raise ValueError(
+                'number of spacetime dimensions of x, sigma, and/or v '
+                'do not match a 2D or 3D surface'
+            )
 
-        if sigma.shape[0] != self.n or v.shape[0] != self.n:
-            raise ValueError('invalid shape')
+        if sigma_.shape[0] != self.n or v_.shape[0] != self.n:
+            raise ValueError(
+                'number of elements of x, sigma, and/or v do not match'
+            )
 
-        cdef double[:] pixx, piyy, pixy, pixz, piyz
+        cdef double[:] pixx_, piyy_, pixy_, pixz_, piyz_
 
         self.shear = (pi is not None)
         if self.shear:
-            pixx = pi['xx']
-            piyy = pi['yy']
-            pixy = pi['xy']
-            if not (pixx.shape[0] == piyy.shape[0] == pixy.shape[0] == self.n):
-                raise ValueError('invalid shape')
+            pixx_ = np.array(pi['xx'], dtype=float, copy=False, ndmin=1)
+            piyy_ = np.array(pi['yy'], dtype=float, copy=False, ndmin=1)
+            pixy_ = np.array(pi['xy'], dtype=float, copy=False, ndmin=1)
+            if not (pixx_.shape[0] == piyy_.shape[0] == pixy_.shape[0] == self.n):
+                raise ValueError(
+                    'number of elements of pi components do not match '
+                    'other surface data'
+                )
             if self.boost_invariant:
                 if 'xz' in pi or 'yz' in pi:
                     warnings.warn(
                         '(xz, yz) components of pi '
-                        'have no effect for 2D surfaces'
+                        'have no effect for a 2D surface'
                     )
             else:
-                pixz = pi['xz']
-                piyz = pi['yz']
-                if not (pixz.shape[0] == piyz.shape[0] == self.n):
-                    raise ValueError('invalid shape')
+                pixz_ = np.array(pi['xz'], dtype=float, copy=False, ndmin=1)
+                piyz_ = np.array(pi['yz'], dtype=float, copy=False, ndmin=1)
+                if not (pixz_.shape[0] == piyz_.shape[0] == self.n):
+                    raise ValueError(
+                        'number of elements of pi components do not match '
+                        'other surface data'
+                    )
+
+        cdef double[:] Pi_
 
         self.bulk = (Pi is not None)
         if self.bulk:
-            if Pi.shape[0] != self.n:
-                raise ValueError('invalid shape')
+            Pi_ = np.array(Pi, dtype=float, copy=False, ndmin=1)
+            if Pi_.shape[0] != self.n:
+                raise ValueError(
+                    'number of elements of Pi do not match other surface data'
+                )
 
         self.data = <SurfaceElem*> PyMem_Malloc(self.n * sizeof(SurfaceElem))
         if not self.data:
@@ -118,24 +131,23 @@ cdef class Surface:
             double gamma, vx, vy, vz, volume, sigma_scale
 
         self.total_volume = 0
-        self.ymax = ymax
 
         for i in range(self.n):
             elem = self.data + i
 
             # read in transverse data first
-            elem.x.t = x[i, 0]
-            elem.x.x = x[i, 1]
-            elem.x.y = x[i, 2]
+            elem.x.t = x_[i, 0]
+            elem.x.x = x_[i, 1]
+            elem.x.y = x_[i, 2]
 
-            elem.sigma.t = sigma[i, 0]
+            elem.sigma.t = sigma_[i, 0]
             # negative sign converts:
             #   covariant (sigma_mu) -> contravariant (sigma^mu)
-            elem.sigma.x = -sigma[i, 1]
-            elem.sigma.y = -sigma[i, 2]
+            elem.sigma.x = -sigma_[i, 1]
+            elem.sigma.y = -sigma_[i, 2]
 
-            vx = v[i, 0]
-            vy = v[i, 1]
+            vx = v_[i, 0]
+            vy = v_[i, 1]
 
             # handle longitudinal direction depending on boost invariance
             if self.boost_invariant:
@@ -143,14 +155,14 @@ cdef class Surface:
                 elem.sigma.z = 0
                 vz = 0
                 # scale dsigma by (2*ymax*tau)
-                sigma_scale = 2*ymax*x[i, 0]
+                sigma_scale = 2*self.ymax*x_[i, 0]
                 elem.sigma.t *= sigma_scale
                 elem.sigma.x *= sigma_scale
                 elem.sigma.y *= sigma_scale
             else:
-                elem.x.z = x[i, 3]
-                elem.sigma.z = -sigma[i, 3]
-                vz = v[i, 2]
+                elem.x.z = x_[i, 3]
+                elem.sigma.z = -sigma_[i, 3]
+                vz = v_[i, 2]
 
             gamma = 1/math.sqrt(1 - vx*vx - vy*vy - vz*vz)
             elem.u.t = gamma
@@ -168,15 +180,15 @@ cdef class Surface:
             )
 
             if self.shear:
-                elem.pi.xx = pixx[i]
-                elem.pi.yy = piyy[i]
-                elem.pi.xy = pixy[i]
+                elem.pi.xx = pixx_[i]
+                elem.pi.yy = piyy_[i]
+                elem.pi.xy = pixy_[i]
                 if self.boost_invariant:
                     elem.pi.xz = 0
                     elem.pi.yz = 0
                 else:
-                    elem.pi.xz = pixz[i]
-                    elem.pi.yz = piyz[i]
+                    elem.pi.xz = pixz_[i]
+                    elem.pi.yz = piyz_[i]
                 boost_pi_lrf(&elem.pi, &elem.u)
             else:
                 elem.pi.xx = 0
@@ -186,7 +198,7 @@ cdef class Surface:
                 elem.pi.xz = 0
                 elem.pi.yz = 0
 
-            elem.Pi = Pi[i] if self.bulk else 0
+            elem.Pi = Pi_[i] if self.bulk else 0
 
         if self.total_volume < 0:
             warnings.warn(
