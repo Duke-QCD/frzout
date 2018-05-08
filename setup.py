@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import os.path
 from setuptools import setup, Extension
-from Cython.Build import cythonize
 
 
 def version():
@@ -19,18 +19,34 @@ def long_description():
         return f.read()
 
 
-# TODO only cythonize for dev builds
-ext_modules = cythonize([
-    Extension(
-        'frzout._frzout',
-        ['frzout/_frzout.pyx'],
-    ),
-    Extension(
-        'frzout.test._test_fourvec',
-        ['frzout/test/_test_fourvec.pyx'],
-    )],
-    compiler_directives=dict(cdivision=True, language_level=3)
-)
+def ext_modules():
+    def module_list(ext):
+        return [
+            Extension(
+                'frzout._frzout',
+                ['frzout/_frzout.' + ext],
+            ),
+            Extension(
+                'frzout.test._test_fourvec',
+                ['frzout/test/_test_fourvec.' + ext],
+                include_dirs=['frzout']
+            )
+        ]
+
+    # determine release or dev build
+    if os.path.exists('PKG-INFO'):
+        return module_list('c')
+    else:
+        try:
+            from Cython.Build import cythonize
+        except ImportError:
+            raise RuntimeError('cython is required for development builds')
+
+        return cythonize(
+            module_list('pyx'),
+            compiler_directives=dict(cdivision=True, language_level=3)
+        )
+
 
 setup(
     name='frzout',
@@ -43,7 +59,7 @@ setup(
     license='MIT',
     packages=['frzout', 'frzout.test'],
     package_data={'frzout': ['mass_width_2017.mcd']},
-    ext_modules=ext_modules,
+    ext_modules=ext_modules(),
     install_requires=['numpy', 'scipy >= 0.18.0'],
     classifiers=[
         'Development Status :: 5 - Production/Stable',

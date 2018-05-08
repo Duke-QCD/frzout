@@ -1,5 +1,3 @@
-# distutils: include_dirs = frzout
-
 from libc cimport math
 
 from .. cimport fourvec
