@@ -3,4 +3,4 @@
 from ._frzout import *
 from .species import *
 
-__version__ = '1.0.0rc0'
+__version__ = '1.0.0'
