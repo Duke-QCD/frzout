@@ -1,11 +1,28 @@
 frzout
 ======
-Cooper-Frye hypersurface sampler.
+*Particlization model (Cooper-Frye sampler) for relativistic heavy-ion collisions*
 
-Current status
---------------
-The implementation is complete and working well.
-I'm working on other things at the moment and have not had time to write documentation;
-in the meantime, a variety of visual tests are posted at `qcd.phy.duke.edu/frzout/tests.html <http://qcd.phy.duke.edu/frzout/tests.html>`_.
+Documentation
+-------------
+`qcd.phy.duke.edu/frzout <http://qcd.phy.duke.edu/frzout>`_
 
-If you're in the Duke group and want to use this, please ask me!
+Quick start
+-----------
+Install::
+
+   pip install frzout
+
+Basic usage:
+
+.. code-block:: python
+
+   import frzout
+
+   # create surface object from data arrays
+   surface = frzout.Surface(x, sigma, v, pi=pi, Pi=Pi)
+
+   # create hadron resonance gas object at T = 0.150 GeV
+   hrg = frzout.HRG(.150)
+
+   # sample particles
+   parts = frzout.sample(surface, hrg)
