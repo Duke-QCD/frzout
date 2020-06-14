@@ -27,7 +27,7 @@ def _test_fourvec():
 
     cdef double uu = fourvec.square(&u)
 
-    assert math.fabs(uu - 1) < 1e-15, \
+    assert math.fabs(uu - 1) < 1e-14, \
         'Four-velocity is not normalized: {} != 1'.format(uu)
 
     cdef double m = random.rand(&rng) + .1
@@ -45,7 +45,7 @@ def _test_fourvec():
     fourvec.boost_inverse(&p, &u)
     pp = fourvec.square(&p)
 
-    assert math.fabs(pp/(m*m) - 1) < 1e-13, \
+    assert math.fabs(pp/(m*m) - 1) < 1e-12, \
         'Boosted four-momentum is not normalized: {} != {}'.format(pp, m*m)
 
     cdef FourVector a
@@ -100,10 +100,10 @@ def _test_fourvec():
 
     fourvec.boost_inverse(&neg_u, &u)
     assert all([
-        math.fabs(neg_u.t - 1) < 1e-15,
-        math.fabs(neg_u.x) < 1e-15,
-        math.fabs(neg_u.y) < 1e-15,
-        math.fabs(neg_u.z) < 1e-15,
+        math.fabs(neg_u.t - 1) < 1e-14,
+        math.fabs(neg_u.x) < 1e-14,
+        math.fabs(neg_u.y) < 1e-14,
+        math.fabs(neg_u.z) < 1e-14,
     ]), 'Boosted four-velocity is not zero: {}'.format(u)
 
     cdef:
