@@ -127,7 +127,7 @@ def _test_fourvec():
         double vnew = u1.x/u1.t
         double vcorrect = (vx1 + vx2)/(1 + vx1*vx2)
 
-    assert math.fabs(vnew/vcorrect - 1) < 1e-14, (
+    assert math.fabs(vnew/vcorrect - 1) < 1e-13, (
         'Boosted four-velocity does not agree with 1D velocity addition: '
         '{} != {}'.format(vnew, vcorrect)
     )
